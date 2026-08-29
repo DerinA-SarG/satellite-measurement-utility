@@ -1,0 +1,157 @@
+:root{
+  --bg:#11161d; --bg2:#171e27; --line:#273140; --line2:#344154;
+  --fg:#e6edf5; --dim:#8c9bad; --accent:#3b82f6; --accent2:#60a5fa;
+  --add:#38bdf8; --sub:#f87171; --ok:#34d399;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:var(--font);font-size:14px;color:var(--fg);background:var(--bg);overflow:hidden}
+
+#shell{display:flex;height:100%}
+#side{width:340px;flex:0 0 340px;background:var(--bg);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden}
+#mapWrap{flex:1;position:relative;min-width:0}
+#map{position:absolute;inset:0;background:#0b0f14}
+
+/* ---- header ---- */
+#brand{display:flex;align-items:center;gap:8px;padding:14px 14px 10px;border-bottom:1px solid var(--line)}
+#brand h1{font-size:14px;font-weight:650;letter-spacing:.2px;margin:0;flex:1}
+.pad{padding:12px 14px;border-bottom:1px solid var(--line)}
+.row{display:flex;gap:6px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+label{display:block;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
+.hint{font-size:11.5px;color:var(--dim);line-height:1.45}
+.hint:empty{display:none}
+
+/* ---- controls ---- */
+input,select,button{font:inherit;color:var(--fg);background:var(--bg2);
+  border:1px solid var(--line2);border-radius:6px;padding:7px 9px}
+input,select{width:100%;margin-top:4px}
+input[type=search]{margin-top:0}
+select{cursor:pointer}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+button{cursor:pointer;background:var(--accent);border-color:var(--accent);font-weight:600;white-space:nowrap}
+button:hover{filter:brightness(1.12)}
+button.ghost{background:var(--bg2);border-color:var(--line2);font-weight:500;color:var(--fg)}
+button.ghost:hover{background:#1f2732}
+button.danger:hover{color:#fecaca;border-color:#7f1d1d;background:#2a1416}
+#helpBtn{width:26px;height:26px;padding:0;border-radius:50%;font-weight:700;line-height:1}
+#searchBtn{flex:0 0 auto}
+
+/* ---- tools ---- */
+.tools{display:grid;gap:6px}
+.tool{display:block;text-align:left;background:var(--bg2);border-color:var(--line2);
+  padding:9px 10px;line-height:1.35;color:var(--fg)}
+.tool em{display:block;font-style:normal;font-size:11px;color:var(--dim);font-weight:400;margin-top:2px}
+.tool .k{display:inline-block;min-width:17px;margin-right:6px;padding:1px 5px;border-radius:4px;
+  background:#0d1219;border:1px solid var(--line2);font-size:10.5px;color:var(--dim);text-align:center}
+.tool.on{background:#16324f;border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.tool.on .k{color:var(--accent2);border-color:var(--accent)}
+
+/* ---- offset ---- */
+.offset .lab{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.offset .row{align-items:center}
+.offset input{margin-top:0;flex:1;min-width:0}
+.offset button{flex:0 0 auto}
+.unitTag{flex:0 0 auto;color:var(--dim);font-size:12px;min-width:20px}
+.offset .hint{margin-top:6px}
+button:disabled{opacity:.45;cursor:not-allowed;filter:none}
+.opt{text-transform:none;letter-spacing:0;color:var(--line2);font-size:10px}
+
+/* ---- shape list ---- */
+.list{flex:1 0 auto;min-height:60px;padding:6px 8px}
+.list:empty::after{content:"No shapes yet. Pick a tool and click the map.";
+  display:block;padding:14px 6px;color:var(--dim);font-size:12px;line-height:1.5}
+.item{border:1px solid var(--line);border-radius:7px;padding:8px 9px;margin-bottom:6px;background:var(--bg2)}
+.item.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.item .top{display:flex;align-items:center;gap:6px}
+.item .swatch{width:9px;height:9px;border-radius:2px;flex:0 0 auto;background:var(--add)}
+.item.subtract .swatch{background:var(--sub)}
+.item.line .swatch{background:#fbbf24;border-radius:1px;height:3px}
+.item.line .big{color:#fbbf24}
+.item .nm{flex:1;min-width:0;background:none;border:none;padding:2px 3px;margin:0;
+  font-weight:600;font-size:13px;border-radius:4px;text-overflow:ellipsis}
+.item .nm:hover{background:#0d1219}
+.item .x,.item .pm{flex:0 0 auto;padding:2px 6px;font-size:11px;background:none;border:1px solid var(--line2);
+  color:var(--dim);font-weight:600}
+.item .x:hover{color:#fca5a5;border-color:#7f1d1d;background:none}
+.item .big{font-size:17px;font-weight:650;margin:5px 0 1px;font-variant-numeric:tabular-nums}
+.item.subtract .big{color:var(--sub)}
+.item .meta{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+
+/* ---- totals ---- */
+.totals{padding:12px 14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#0d1219}
+.totals .lab{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.totals .num{font-size:25px;font-weight:680;font-variant-numeric:tabular-nums;line-height:1.15;margin-top:2px}
+.totals .sub{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;margin-top:3px}
+.totals .cost{color:var(--ok);font-weight:600}
+
+.extras summary{cursor:pointer;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px;
+  padding:2px 0;list-style:none}
+.extras summary::-webkit-details-marker{display:none}
+.extras summary::before{content:"\25B8 ";display:inline-block;transition:transform .12s}
+.extras[open] summary::before{transform:rotate(90deg)}
+.extras .grid2{margin-top:9px}
+.extras .hint{margin:8px 0 0}
+
+.io{display:grid;gap:6px}
+.io button{flex:1}
+#foot{padding:10px 14px;display:flex;flex-direction:column;gap:6px;margin-top:auto}
+.chk{display:flex;align-items:center;gap:7px;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--fg)}
+.chk input{width:auto;margin:0}
+
+/* ---- map bits ---- */
+#readout{position:absolute;left:8px;bottom:8px;z-index:500;background:rgba(10,15,21,.82);
+  border:1px solid var(--line2);border-radius:6px;padding:4px 8px;font-size:11.5px;color:var(--fg);
+  font-variant-numeric:tabular-nums;pointer-events:none;backdrop-filter:blur(3px)}
+#readout:empty{display:none}
+.leaflet-container{background:#0b0f14;font-family:var(--font)}
+.leaflet-control-attribution{font-size:10px}
+.measure-label{background:rgba(10,15,21,.8);border:1px solid rgba(255,255,255,.28);border-radius:5px;
+  color:#fff;font-size:11.5px;font-weight:600;padding:2px 6px;white-space:nowrap;box-shadow:none;
+  font-variant-numeric:tabular-nums;text-align:center}
+.measure-label::before{display:none}
+.vtx{background:#fff;border:2px solid var(--accent);border-radius:50%;box-sizing:border-box;cursor:move}
+.vtx.mid{background:rgba(255,255,255,.45);border-style:dashed;cursor:copy}
+.vtx.move{background:var(--accent);border-color:#fff;color:#fff;font-size:12px;line-height:16px;
+  text-align:center;cursor:move;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+.drawing,.drawing .leaflet-interactive{cursor:crosshair !important}
+
+dialog{max-width:520px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);color:var(--fg);
+  padding:20px 22px;line-height:1.5}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog h2{margin:0 0 12px;font-size:16px}
+dialog h3{margin:16px 0 6px;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+dialog ul{margin:0;padding-left:18px;font-size:13px}
+dialog li{margin-bottom:8px}
+dialog .keys td{padding:2px 10px 2px 0;font-size:13px}
+kbd{background:#0d1219;border:1px solid var(--line2);border-radius:4px;padding:1px 6px;font-size:11px;font-family:var(--font)}
+dialog button{margin-top:16px}
+
+#printSheet{display:none}
+
+@media (max-width:820px){
+  #shell{flex-direction:column-reverse}
+  #side{width:auto;flex:0 0 46%;border-right:none;border-top:1px solid var(--line)}
+  #mapWrap{flex:1 1 54%}
+}
+
+@media print{
+  html{height:auto}
+  body{overflow:visible;background:#fff;color:#000;height:auto}
+  #shell{display:block;height:auto}
+  #side,#readout,.leaflet-control-zoom,.leaflet-control-layers,.vtx{display:none !important}
+  /* keep the real map — Leaflet tiles are plain <img>, so they print */
+  #mapWrap{position:relative;height:105mm;margin:6mm 14mm 7mm;border:1px solid #999;overflow:hidden}
+  .measure-label{background:#fff !important;color:#000 !important;border-color:#666 !important}
+  #printSheet{display:block;padding:0 14mm}
+  #printSheet h1{font-size:17pt;margin:0 0 2mm}
+  #printSheet .when{font-size:9pt;color:#555;margin-bottom:6mm}
+  #printSheet table{width:100%;border-collapse:collapse;font-size:10pt}
+  #printSheet th,#printSheet td{border-bottom:1px solid #ccc;padding:3.5mm 2mm;text-align:right}
+  #printSheet th:first-child,#printSheet td:first-child{text-align:left}
+  #printSheet thead th{border-bottom:1.5px solid #000;font-size:8.5pt;text-transform:uppercase;letter-spacing:.4px}
+  #printSheet tfoot td{border-top:1.5px solid #000;border-bottom:none;font-weight:700;font-size:11.5pt;padding-top:4mm}
+  #printSheet .note{font-size:8.5pt;color:#555;margin-top:8mm;line-height:1.5}
+}

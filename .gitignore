@@ -1,0 +1,17 @@
+# build output
+build/
+dist/
+*.spec
+icon.ico
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

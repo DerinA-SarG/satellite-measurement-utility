@@ -1,0 +1,5 @@
+# Only needed to BUILD the desktop .exe.
+# The web version (start.bat / python -m http.server) needs nothing at all.
+pywebview>=5.0
+pyinstaller>=6.0
+pillow>=10.0

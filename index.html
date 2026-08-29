@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warehouse Area Measure</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div id="shell">
+
+  <aside id="side">
+    <header id="brand">
+      <h1>Warehouse Area Measure</h1>
+      <button id="helpBtn" class="ghost" title="Accuracy notes &amp; shortcuts">?</button>
+    </header>
+
+    <div class="pad">
+      <div class="row">
+        <input id="search" type="search" placeholder="Address, or  32.7555, -97.3308" autocomplete="off">
+        <button id="searchBtn" class="ghost" title="Find">Go</button>
+      </div>
+      <div id="searchMsg" class="hint"></div>
+    </div>
+
+    <div class="pad tools">
+      <button class="tool" data-tool="area">
+        <span class="k">A</span> Area
+        <em>Click each corner. Shift = right angles</em>
+      </button>
+      <button class="tool" data-tool="line">
+        <span class="k">L</span> Line
+        <em>Distance along one or more segments</em>
+      </button>
+    </div>
+    <div id="drawHint" class="pad hint"></div>
+
+    <div class="pad offset">
+      <div class="lab">Offset around a shape</div>
+      <div class="row">
+        <input id="offsetDist" type="number" min="0" step="5" value="100">
+        <span id="offsetUnit" class="unitTag">ft</span>
+        <button id="offsetBtn" disabled>Create</button>
+      </div>
+      <div id="offsetMsg" class="hint">Select a shape to offset it.</div>
+    </div>
+
+    <div class="pad grid2">
+      <label>Area units
+        <select id="areaUnit">
+          <option value="ft2" selected>sq ft</option>
+          <option value="m2">sq m</option>
+          <option value="acre">acres</option>
+          <option value="ha">hectares</option>
+          <option value="yd2">sq yd</option>
+          <option value="mi2">sq mi</option>
+        </select>
+      </label>
+      <label>Length units
+        <select id="lenUnit">
+          <option value="ft" selected>feet</option>
+          <option value="m">meters</option>
+          <option value="yd">yards</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="list" class="list"></div>
+
+    <div id="totals" class="totals"></div>
+
+    <details class="pad extras">
+      <summary>Roof pitch &amp; unit rate</summary>
+      <div class="grid2">
+        <label>Pitch (rise :12)
+          <input id="pitch" type="number" min="0" max="12" step="0.5" value="0">
+        </label>
+        <label>Rate per unit area
+          <input id="rate" type="number" min="0" step="0.01" placeholder="0.00">
+        </label>
+      </div>
+      <p class="hint">Pitch converts flat footprint to sloped roof surface. Warehouses are usually 0.25&ndash;0.5:12, which adds well under 1%.</p>
+    </details>
+
+    <details class="pad extras" id="imageryBox">
+      <summary>Satellite imagery</summary>
+      <label>Google Maps API key <span class="opt">optional</span>
+        <input id="gkey" type="password" placeholder="Paste key to use Google imagery" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="row" style="margin-top:8px">
+        <button id="gkeyApply" class="ghost">Use Google</button>
+        <button id="gkeyClear" class="ghost">Clear</button>
+      </div>
+      <div id="gkeyMsg" class="hint"></div>
+      <p class="hint">Without a key the map uses Esri World Imagery, which is free and needs no
+      account. A key switches to Google&rsquo;s Map Tiles API, which is sharper in some areas and
+      billed per tile by Google. If Google fails for any reason the map falls back to Esri on its own.</p>
+    </details>
+
+    <div class="pad io">
+      <div class="row">
+        <button id="expKml">Save .kml</button>
+        <button id="expGeo" class="ghost">.geojson</button>
+      </div>
+      <div class="row">
+        <button id="impBtn" class="ghost">Open file&hellip;</button>
+        <button id="printBtn" class="ghost">Print</button>
+        <button id="clearBtn" class="ghost danger">Clear</button>
+      </div>
+      <input id="impFile" type="file" accept=".kml,.geojson,.json" hidden>
+      <div id="ioMsg" class="hint"></div>
+    </div>
+
+    <footer id="foot">
+      <label class="chk"><input type="checkbox" id="showLabels" checked> Labels on map</label>
+      <div id="saveState" class="hint"></div>
+    </footer>
+  </aside>
+
+  <main id="mapWrap">
+    <div id="map"></div>
+    <div id="readout"></div>
+  </main>
+
+</div>
+
+<div id="printSheet"></div>
+
+<dialog id="help">
+  <h2>Measuring warehouses accurately</h2>
+  <ul>
+    <li><b>Trace the roof, not the walls.</b> Satellite imagery is rarely straight overhead, so a tall building leans. Its roof outline sits offset from its footprint &mdash; pick one and stay consistent. For roof area, trace the roof edge all the way around.</li>
+    <li><b>Zoom in before the first click.</b> At zoom 20 each pixel is roughly 6&nbsp;in, so a careless corner costs a few feet.</li>
+    <li><b>Hold Shift while drawing</b> to snap each new wall square to the previous one. Most warehouses are rectangular, and this is faster and more accurate than eyeballing the corners.</li>
+    <li><b>Imagery dates vary.</b> A recent expansion may not be visible. Cross-check against the county parcel viewer if the number matters.</li>
+    <li>Areas use a local ellipsoidal projection anchored at each shape, so they are accurate to well under 0.01% at building scale &mdash; tighter than the spherical math most web tools use.</li>
+  </ul>
+  <h3>The tools</h3>
+  <ul>
+    <li><b>Area</b> &mdash; click each corner of the roof, then double-click or press Enter to close it.</li>
+    <li><b>Line</b> &mdash; click along a route for a distance. Each segment is measured as well as the total.</li>
+    <li><b>Offset</b> &mdash; select a shape, set a distance, and get a new shape that distance out all the way around it. Useful for fire lanes, setbacks and laydown yards. It works on lines too, which gives you a corridor of a given width.</li>
+  </ul>
+  <h3>Editing</h3>
+  <p class="hint">Drag a corner handle to move it. Drag a hollow midpoint handle&rsquo;s spot by clicking it to add a corner. Right-click a corner to remove it. Drag anywhere inside a selected shape to slide the whole thing around.</p>
+  <h3>Shortcuts</h3>
+  <table class="keys">
+    <tr><td><kbd>A</kbd></td><td>Area tool</td></tr>
+    <tr><td><kbd>L</kbd></td><td>Line tool</td></tr>
+    <tr><td><kbd>Shift</kbd></td><td>Hold while drawing to snap to right angles</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>Finish the current shape</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Cancel drawing / deselect</td></tr>
+    <tr><td><kbd>Del</kbd></td><td>Delete selected shape</td></tr>
+  </table>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+
+<script src="vendor/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
