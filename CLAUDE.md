@@ -1,0 +1,151 @@
+# CLAUDE.md — Satellite Measurement Utility
+
+Instructions for Claude working in this repo. Read before changing anything.
+
+## What this is
+
+A zero-dependency web app that measures areas and distances on satellite
+imagery, plus a thin Python shell that wraps it as a desktop `.exe`. No
+account, no API key, no backend, no build step for the web version. Everything
+the browser needs is `index.html`, `app.css`, `app.js` and `vendor/`.
+
+## Ground rules
+
+These are the things that make the tool correct. Do not trade them away for
+convenience.
+
+1. **Never replace the geodesy with a spherical formula.** Areas are computed
+   in a local East/North metre frame built from the true WGS84 radii of
+   curvature at each shape's own latitude (`frameAt`), then measured with the
+   shoelace formula. Turf's `area` and Google's `computeArea` both use a sphere
+   of radius 6378137 and run **0.67% high at the equator, 0.12% high at 40°N,
+   0.41% low at 64°N**. Swapping one in would silently make every number worse.
+2. **Never fetch Google imagery from anything but the Map Tiles API.** The
+   `mt0.google.com/vt` tile endpoint that circulates online violates Google's
+   terms. The only sanctioned path is `createSession` then
+   `tile.googleapis.com/v1/2dtiles`, which is what `enableGoogle()` does.
+3. **Keep Esri as the always-available fallback.** Google is opt-in and billed
+   per tile; Esri is free and keyless. Any Google failure must fall back rather
+   than leave a blank map.
+4. **Keep Leaflet vendored.** No CDN. `vendor/` ships with the repo so the tool
+   works if unpkg is down, and `vendor/LEAFLET-LICENSE.txt` must stay — we
+   redistribute `leaflet.js` under BSD-2-Clause.
+5. **No secrets, no binaries, no user data in git.** The Google key lives in
+   the user's `localStorage` only. `dist/` and `icon.ico` are generated and
+   gitignored; the exe ships via GitHub Releases.
+6. **Preserve saved work across renames.** `restore()` reads `STORE_KEY` and
+   falls back to `LEGACY_KEY`. If you change the key again, add another
+   fallback rather than orphaning people's shapes.
+
+## Repo map
+
+```
+index.html      markup; the sidebar is the whole UI
+app.css         styling, including the @media print stylesheet
+app.js          everything, in 15 numbered sections
+vendor/         Leaflet 1.9.4 + its licence
+desktop.py      native-window shell: loopback server + OS file dialogs
+build_exe.py    generates icon.ico, then PyInstaller --onefile --windowed
+start.bat/.sh   run it in a browser
+```
+
+`app.js` sections: 1 geodesy · 1b offset · 2 units · 3 state · 4 map/imagery ·
+5 shapes · 6 handles · 7 drawing · 8 offset UI · 9 sidebar · 10 export/import ·
+11 persistence · 12 search · 13 print · 14 wiring · 15 boot.
+
+Section 1 is pure maths with no DOM or Leaflet dependency — keep it that way so
+it stays testable in isolation.
+
+## Commands
+
+```bash
+python -m http.server 8123        # run the web version
+pip install -r requirements.txt   # only needed to build the exe
+python build_exe.py               # -> dist/SatelliteMeasurementUtility.exe
+```
+
+There is no test runner. Verification is done by executing probes in the live
+page, described below. Do that rather than assuming a change is correct.
+
+## How to verify a change
+
+**Any change to section 1 or 1b must be re-validated numerically.** The method
+is to check against a closed form, not against the previous output.
+
+*Area* — the exact area of a lat/lon cell on the WGS84 ellipsoid has a closed
+form. Compare `measureArea` against it across latitudes; error must stay at
+0.0000%:
+
+```python
+Z = lambda phi: A*A*(1-E2)/2 * (math.sin(phi)/(1-E2*math.sin(phi)**2)
+                + (1/(2*E))*math.log((1+E*math.sin(phi))/(1-E*math.sin(phi))))
+exact = (lon2-lon1)*D2R * (Z(lat2*D2R) - Z(lat1*D2R))
+```
+
+Sanity-check the integral itself first: `2π(Z(π/2) − Z(−π/2))` must give
+510,065,622 km².
+
+*Offset* — a buffer of distance `d` around a shape has area `A + Pd + πd²`.
+Check that, and separately assert that **every** output vertex sits exactly `d`
+from the source via `distToPath`. Expect ≤0.02% on area (the residual is the
+polygon approximation of the corner arcs) and exact on distance.
+
+*In the browser* — open the page and run probes with the JS tool:
+
+```js
+measureArea(pts)            // area m², perimeter, minRect dims, label anchor
+offsetGeometry(pts, kind, d)
+importKml(toKml())          // round-trip must preserve pts, kind, mode, colour
+```
+
+Check `read_console_messages` for errors after every change.
+
+## Conventions
+
+- Plain ES2020, no framework, no build. Strict mode, `const`/`let`.
+- Two-space indent in JS/CSS/HTML, four in Python.
+- Shapes are `{id, name, kind:'area'|'line', mode:'add'|'subtract', color, pts}`
+  where `pts` is `[[lat,lng],…]`, unclosed. Closing points are added only at
+  export time.
+- Colour is `null` when the shape uses its kind/mode default; `colorOf()`
+  resolves it. Never write the default into `color`.
+- Comments explain *why*, not *what*. Match the existing density — sparse, with
+  a short block above anything non-obvious.
+- British spelling in UI text and comments ("colour", "centre").
+
+## Things that will bite you
+
+Each of these cost real debugging time. They are fixed; do not undo them.
+
+- **pywebview introspection.** Storing the window on the `Api` object sends
+  pywebview recursing through WebView2 COM objects and spraying
+  `maximum recursion depth exceeded` at startup. `Api` must hold only plain
+  methods; get the window via `webview.windows[0]` at call time.
+- **Leaflet pane order.** Tooltips (650) sit above markers (600), so edit
+  handles vanish under measurement labels. Handles live in a custom `handles`
+  pane at 680.
+- **Thin polylines are unhittable.** Dragging a 4px line body grabs the map and
+  pans it instead. That is why every selected shape gets a centre move grip.
+- **Double-click adds a duplicate vertex.** Leaflet fires `click`, `click`,
+  `dblclick`. The `dblclick` handler pops the extra point.
+- **`%TEMP%` does not exist off-Windows.** Use `tempfile.gettempdir()`.
+- **`.sh` files need LF.** `.gitattributes` enforces it; without it they die on
+  Linux with `bad interpreter`.
+
+## Rebuilding this from scratch
+
+The order that worked, if you ever need to reproduce it:
+
+1. Verify the free imagery endpoints actually respond before designing around
+   them — Esri World Imagery to z20 keyless, USGS via WMS (its `/tile/` REST
+   path 404s), Nominatim for geocoding.
+2. Write and validate section 1 against the closed form **before** any UI.
+   Getting the maths right first is what makes everything after it trustworthy.
+3. Leaflet + raster tiles, drawing tools hand-rolled. No Turf — the local-frame
+   projection makes plain planar geometry correct at this scale.
+4. Export/import next, tested by round-trip and by parsing a real Google Earth
+   file (nested `Folder`, indented multi-line `<coordinates>`, `<tessellate>`).
+5. Only then the desktop shell, and only because browser downloads are worse
+   than native Save dialogs.
+
+Verify each layer numerically before building the next one on top of it.
