@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 PORT="${PORT:-8123}"
 PY=$(command -v python3 || command -v python)
 
-echo "Warehouse Area Measure -> http://localhost:$PORT"
+echo "Satellite Measurement Utility -> http://localhost:$PORT"
 echo "Press Ctrl-C to stop."
 
 "$PY" -m http.server "$PORT" &

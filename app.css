@@ -66,9 +66,13 @@ button:disabled{opacity:.45;cursor:not-allowed;filter:none}
 .item{border:1px solid var(--line);border-radius:7px;padding:8px 9px;margin-bottom:6px;background:var(--bg2)}
 .item.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .item .top{display:flex;align-items:center;gap:6px}
-.item .swatch{width:9px;height:9px;border-radius:2px;flex:0 0 auto;background:var(--add)}
-.item.subtract .swatch{background:var(--sub)}
-.item.line .swatch{background:#fbbf24;border-radius:1px;height:3px}
+/* the swatch is a real colour input; strip the native chrome so it reads as a chip */
+.item .swatch{width:15px;height:15px;flex:0 0 auto;padding:0;margin:0;border-radius:3px;
+  border:1px solid var(--line2);background:none;cursor:pointer;appearance:none;-webkit-appearance:none}
+.item .swatch::-webkit-color-swatch-wrapper{padding:0}
+.item .swatch::-webkit-color-swatch{border:none;border-radius:2px}
+.item .swatch::-moz-color-swatch{border:none;border-radius:2px}
+.item .swatch:hover{border-color:var(--fg)}
 .item.line .big{color:#fbbf24}
 .item .nm{flex:1;min-width:0;background:none;border:none;padding:2px 3px;margin:0;
   font-weight:600;font-size:13px;border-radius:4px;text-overflow:ellipsis}

@@ -1,4 +1,4 @@
-# Warehouse Area Measure
+# Satellite Measurement Utility
 
 Measure building footprints, roof areas and distances from satellite imagery.
 Draw on the map, read the square footage, save the result as a `.kml` you can
@@ -8,15 +8,15 @@ No account, no API key, no server. Nothing you draw leaves your machine.
 
 ## Get it running
 
-**Easiest — download the app.** Grab `WarehouseAreaMeasure.exe` from the
+**Easiest — download the app.** Grab `SatelliteMeasurementUtility.exe` from the
 [Releases](../../releases) page and double-click it. One file, its own window,
 no Python needed. Windows only.
 
 **From source, any OS.** No install step, no dependencies:
 
 ```bash
-git clone <this repo>
-cd warehouse-measure
+git clone https://github.com/DerinA-SarG/satellite-measurement-utility.git
+cd satellite-measurement-utility
 python -m http.server 8123
 ```
 
@@ -32,7 +32,7 @@ pip install -r requirements.txt
 python build_exe.py
 ```
 
-That writes `dist/WarehouseAreaMeasure.exe`. It is unsigned, so Windows
+That writes `dist/SatelliteMeasurementUtility.exe`. It is unsigned, so Windows
 SmartScreen will warn anyone who downloads it — "More info → Run anyway".
 
 ## Using it
@@ -51,6 +51,10 @@ SmartScreen will warn anyone who downloads it — "More info → Run anyway".
 5. The `+` button next to an area flips it to **subtract**, so you can cut a
    courtyard or an excluded section out of the site total. Lines never count
    toward the area total.
+6. **Colour** — every shape has a colour chip beside its name. Click it to pick
+   any colour, right-click to go back to the default. Colours are saved with
+   your work and written into exported `.kml` and `.geojson`, so a plan stays
+   colour-coded when someone opens it in Google Earth or QGIS.
 
 **Editing:** drag a corner handle to move it, click a hollow midpoint handle to
 add a corner, right-click a corner to delete it. Drag the blue grip at the
@@ -74,7 +78,7 @@ Everything autosaves to your browser, so closing the tab does not lose work.
 **Save .kml** writes a Google Earth file: one Placemark per shape, named,
 styled, with the measurements in the description. Areas become Polygons and
 lines become LineStrings. Blue is included, red dashed is excluded, amber is a
-line. **.geojson** is the same data for QGIS or anything else.
+line, unless you have picked your own colour, which is carried through. **.geojson** is the same data for QGIS or anything else, with `stroke` and `fill` in the simplestyle convention.
 
 **Open file…** reads `.kml` and `.geojson` back, including files written by
 Google Earth and QGIS — nested folders, multi-line coordinates, MultiPolygons

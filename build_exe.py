@@ -1,8 +1,8 @@
-"""Build Warehouse Area Measure into a single standalone .exe.
+"""Build Satellite Measurement Utility into a single standalone .exe.
 
     python build_exe.py
 
-Produces dist/WarehouseAreaMeasure.exe — one file, no installer, no Python
+Produces dist/SatelliteMeasurementUtility.exe — one file, no installer, no Python
 needed on the machine that runs it. Needs pyinstaller, pywebview and Pillow
 installed here to build.
 """
@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NAME = "WarehouseAreaMeasure"
+NAME = "SatelliteMeasurementUtility"
 ICON = os.path.join(HERE, "icon.ico")
 
 

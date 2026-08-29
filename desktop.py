@@ -1,4 +1,4 @@
-"""Desktop wrapper for Warehouse Area Measure.
+"""Desktop wrapper for Satellite Measurement Utility.
 
 Serves the web assets from a loopback-only HTTP server and shows them in a
 native window (WebView2 on Windows). Saving and opening files go through real
@@ -17,7 +17,7 @@ import tempfile
 import threading
 import traceback
 
-APP_NAME = "Warehouse Area Measure"
+APP_NAME = "Satellite Measurement Utility"
 
 
 def asset_dir():
@@ -26,7 +26,7 @@ def asset_dir():
 
 
 def log_path():
-    return os.path.join(tempfile.gettempdir(), "warehouse-area-measure.log")
+    return os.path.join(tempfile.gettempdir(), "satellite-measurement-utility.log")
 
 
 def log(msg):
@@ -126,7 +126,7 @@ def main():
 
     # let a test harness find the port
     try:
-        with open(os.path.join(tempfile.gettempdir(), "wam-port"), "w") as fh:
+        with open(os.path.join(tempfile.gettempdir(), "smu-port"), "w") as fh:
             fh.write(str(port))
     except OSError:
         pass

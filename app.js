@@ -1,5 +1,5 @@
 'use strict';
-/* Warehouse Area Measure — free satellite area/distance tool.
+/* Satellite Measurement Utility — free area and distance measuring on satellite imagery.
    No account required. Everything lives in this file. */
 
 /* ------------------------------------------------------------------ *
@@ -267,7 +267,8 @@ const pitchFactor = () => Math.sqrt(1 + Math.pow(state.pitch / 12, 2));
  * 3. State
  * ------------------------------------------------------------------ */
 const COLOR = { add: '#38bdf8', subtract: '#f87171', line: '#fbbf24' };
-const STORE_KEY = 'warehouse-measure/v1';
+const STORE_KEY = 'satellite-measurement-utility/v1';
+const LEGACY_KEY = 'warehouse-measure/v1';   // renamed; keep older saves loadable
 
 const state = {
   shapes: [],        // {id,name,kind:'area'|'line',mode,pts,layer,label,m}
@@ -390,6 +391,7 @@ function addShape(pts, opts = {}) {
     name: opts.name || defaultName(kind),
     kind,
     mode: opts.mode === 'subtract' ? 'subtract' : 'add',
+    color: opts.color || null,
     pts,
     layer: null,
     label: null
@@ -402,8 +404,12 @@ function addShape(pts, opts = {}) {
   return sh;
 }
 
+/** A shape's own colour if it has been customised, otherwise the default
+    for its kind and mode. */
+const colorOf = (sh) => sh.color || (sh.kind === 'line' ? COLOR.line : COLOR[sh.mode]);
+
 function styleFor(sh) {
-  const c = sh.kind === 'line' ? COLOR.line : COLOR[sh.mode];
+  const c = colorOf(sh);
   const on = state.selected === sh.id;
   return {
     color: c,
@@ -737,7 +743,7 @@ function renderList() {
                    (sh.mode === 'subtract' && !isLine ? ' subtract' : '') + (isLine ? ' line' : '');
     el.innerHTML =
       `<div class="top">
-         <span class="swatch"></span>
+         <input type="color" class="swatch" value="${colorOf(sh)}" title="Change colour">
          <input class="nm" value="${escapeHtml(sh.name)}" spellcheck="false">
          ${isLine ? '' : `<button class="pm" title="Add to / subtract from the total">${sh.mode === 'subtract' ? '&minus;' : '+'}</button>`}
          <button class="x" title="Delete">&times;</button>
@@ -754,6 +760,12 @@ function renderList() {
     });
     el.querySelector('.nm').addEventListener('input', (e) => {
       sh.name = e.target.value; refreshShape(sh); save();
+    });
+    const sw = el.querySelector('.swatch');
+    sw.addEventListener('input', (e) => { sh.color = e.target.value; refreshShape(sh); save(); });
+    sw.addEventListener('contextmenu', (e) => {      // right-click restores the default
+      e.preventDefault();
+      sh.color = null; refreshShape(sh); renderAll(); save();
     });
     const pm = el.querySelector('.pm');
     if (pm) pm.addEventListener('click', () => {
@@ -825,16 +837,18 @@ async function saveText(name, mime, text, what) {
 
 const stamp = () => new Date().toISOString().slice(0, 10);
 
+/** #rrggbb -> KML's aabbggrr byte order. */
+function kmlColor(hex, aa) {
+  const h = hex.replace('#', '');
+  return aa + h.slice(4, 6) + h.slice(2, 4) + h.slice(0, 2);
+}
+
 function toKml() {
-  const style = (id, kml, fill) =>
-    `  <Style id="${id}">
-    <LineStyle><color>${kml}</color><width>2.4</width></LineStyle>
-    <PolyStyle><color>${fill}</color></PolyStyle>
-  </Style>`;
 
   const marks = state.shapes.map(sh => {
     const m = sh.m || measureOf(sh.pts, sh.kind);
     const isLine = sh.kind === 'line';
+    const col = colorOf(sh);
     const coords = (isLine ? sh.pts : sh.pts.concat([sh.pts[0]]))
       .map(p => `${p[1].toFixed(9)},${p[0].toFixed(9)},0`).join(' ');
     const desc = isLine
@@ -851,10 +865,14 @@ function toKml() {
     return `  <Placemark>
     <name>${escapeHtml(sh.name)}</name>
     <description><![CDATA[${desc.filter(Boolean).join('<br>')}]]></description>
-    <styleUrl>#${isLine ? 'line' : sh.mode}</styleUrl>
+    <Style>
+      <LineStyle><color>${kmlColor(col, 'ff')}</color><width>2.4</width></LineStyle>
+      <PolyStyle><color>${isLine ? '00000000' : kmlColor(col, '59')}</color></PolyStyle>
+    </Style>
     <ExtendedData>
       <Data name="kind"><value>${sh.kind}</value></Data>
       <Data name="mode"><value>${sh.mode}</value></Data>
+      <Data name="color"><value>${col}</value></Data>
       ${isLine ? `<Data name="length_m"><value>${m.len.toFixed(3)}</value></Data>`
                : `<Data name="area_sqm"><value>${m.area.toFixed(3)}</value></Data>`}
     </ExtendedData>
@@ -867,10 +885,7 @@ function toKml() {
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>Site measurements ${stamp()}</name>
-  <description><![CDATA[Total ${fmtArea(t.net * pitchFactor())} across ${state.shapes.length} shape(s).<br>Measured with Warehouse Area Measure.]]></description>
-${style('add', 'fff8bd38', '59f8bd38')}
-${style('subtract', 'ff7171f8', '407171f8')}
-${style('line', 'ff24bffb', '00000000')}
+  <description><![CDATA[Total ${fmtArea(t.net * pitchFactor())} across ${state.shapes.length} shape(s).<br>Measured with Satellite Measurement Utility.]]></description>
 ${marks}
 </Document>
 </kml>`;
@@ -886,11 +901,13 @@ function toGeoJson() {
         type: 'Feature',
         properties: isLine
           ? { name: sh.name, kind: 'line', length_m: +m.len.toFixed(3),
-              length_ft: +(m.len * 3.280839895013123).toFixed(1) }
+              length_ft: +(m.len * 3.280839895013123).toFixed(1),
+              stroke: colorOf(sh) }
           : { name: sh.name, kind: 'area', mode: sh.mode,
               area_sqm: +m.area.toFixed(3),
               area_sqft: +(m.area * 10.763910416709722).toFixed(1),
-              perimeter_m: +m.perim.toFixed(3) },
+              perimeter_m: +m.perim.toFixed(3),
+              stroke: colorOf(sh), fill: colorOf(sh) },
         geometry: isLine
           ? { type: 'LineString', coordinates: sh.pts.map(p => [+p[1].toFixed(9), +p[0].toFixed(9)]) }
           : { type: 'Polygon',
@@ -936,6 +953,13 @@ function importKml(text) {
     }
     const styleUrl = pm.getElementsByTagNameNS('*', 'styleUrl')[0];
     if (styleUrl && styleUrl.textContent.trim() === '#subtract') mode = 'subtract';
+    let color = null;
+    for (const d of pm.getElementsByTagNameNS('*', 'Data')) {
+      if (d.getAttribute('name') === 'color') {
+        const v = d.getElementsByTagNameNS('*', 'value')[0];
+        if (v && /^#[0-9a-f]{6}$/i.test(v.textContent.trim())) color = v.textContent.trim();
+      }
+    }
 
     const polys = [];
     for (const poly of pm.getElementsByTagNameNS('*', 'Polygon')) {
@@ -950,11 +974,11 @@ function importKml(text) {
     }
     polys.forEach((r, i) => {
       const pts = dedupeRing(r, true);
-      if (pts.length >= 3) found.push({ pts, kind: 'area', mode, name: polys.length > 1 ? `${base} ${i + 1}` : base });
+      if (pts.length >= 3) found.push({ pts, kind: 'area', mode, color, name: polys.length > 1 ? `${base} ${i + 1}` : base });
     });
     lines.forEach((r, i) => {
       const pts = dedupeRing(r, false);
-      if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', name: lines.length > 1 ? `${base} ${i + 1}` : base });
+      if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', color, name: lines.length > 1 ? `${base} ${i + 1}` : base });
     });
   }
   return found;
@@ -974,7 +998,8 @@ function importGeoJson(text) {
       const runs = geo.type === 'LineString' ? [geo.coordinates] : geo.coordinates;
       runs.forEach((r, i) => {
         const pts = dedupeRing(r.map(c => [c[1], c[0]]), false);
-        if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', name: nm + (runs.length > 1 ? ` ${i + 1}` : '') });
+        if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', color: props.stroke || null,
+                                          name: nm + (runs.length > 1 ? ` ${i + 1}` : '') });
       });
       return;
     }
@@ -984,6 +1009,7 @@ function importGeoJson(text) {
       const pts = dedupeRing(poly[0].map(c => [c[1], c[0]]), true);
       if (pts.length >= 3) {
         found.push({ pts, kind: 'area', name: nm + (polys.length > 1 ? ` ${i + 1}` : ''),
+                     color: props.fill || props.stroke || null,
                      mode: props.mode === 'subtract' ? 'subtract' : 'add' });
       }
     });
@@ -993,7 +1019,7 @@ function importGeoJson(text) {
 
 function loadFound(found, label) {
   if (!found.length) { ioMsg('No shapes found in that file.'); return; }
-  found.forEach(f => addShape(f.pts, { name: f.name, mode: f.mode, kind: f.kind }));
+  found.forEach(f => addShape(f.pts, { name: f.name, mode: f.mode, kind: f.kind, color: f.color }));
   const all = state.shapes.flatMap(s => s.pts);
   if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.15));
   renderAll(); save();
@@ -1032,7 +1058,8 @@ function save() {
     try {
       const c = map.getCenter();
       localStorage.setItem(STORE_KEY, JSON.stringify({
-        shapes: state.shapes.map(s => ({ name: s.name, kind: s.kind, mode: s.mode, pts: s.pts })),
+        shapes: state.shapes.map(s => ({ name: s.name, kind: s.kind, mode: s.mode,
+                                         color: s.color, pts: s.pts })),
         view: { c: [c.lat, c.lng], z: map.getZoom() },
         areaUnit: state.areaUnit, lenUnit: state.lenUnit,
         pitch: state.pitch, rate: state.rate, labels: state.labels,
@@ -1046,7 +1073,9 @@ function save() {
 
 function restore() {
   let d;
-  try { d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch (e) { return false; }
+  try {
+    d = JSON.parse(localStorage.getItem(STORE_KEY) || localStorage.getItem(LEGACY_KEY) || 'null');
+  } catch (e) { return false; }
   if (!d) return false;
   state.areaUnit = d.areaUnit || 'ft2';
   state.lenUnit = d.lenUnit || 'ft';
@@ -1062,7 +1091,8 @@ function restore() {
   $('showLabels').checked = state.labels;
   $('offsetDist').value = state.offsetDist;
   $('gkey').value = state.gkey;
-  (d.shapes || []).forEach(s => addShape(s.pts, { name: s.name, mode: s.mode, kind: s.kind }));
+  (d.shapes || []).forEach(s => addShape(s.pts, { name: s.name, mode: s.mode, kind: s.kind,
+                                                  color: s.color }));
   if (d.view) map.setView(d.view.c, d.view.z);
   return true;
 }

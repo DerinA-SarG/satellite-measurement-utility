@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Warehouse Area Measure</title>
+<title>Satellite Measurement Utility</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="app.css">
 </head>
@@ -13,7 +13,7 @@
 
   <aside id="side">
     <header id="brand">
-      <h1>Warehouse Area Measure</h1>
+      <h1>Satellite Measurement Utility</h1>
       <button id="helpBtn" class="ghost" title="Accuracy notes &amp; shortcuts">?</button>
     </header>
 
@@ -129,7 +129,7 @@
 <div id="printSheet"></div>
 
 <dialog id="help">
-  <h2>Measuring warehouses accurately</h2>
+  <h2>Measuring accurately</h2>
   <ul>
     <li><b>Trace the roof, not the walls.</b> Satellite imagery is rarely straight overhead, so a tall building leans. Its roof outline sits offset from its footprint &mdash; pick one and stay consistent. For roof area, trace the roof edge all the way around.</li>
     <li><b>Zoom in before the first click.</b> At zoom 20 each pixel is roughly 6&nbsp;in, so a careless corner costs a few feet.</li>
@@ -144,7 +144,9 @@
     <li><b>Offset</b> &mdash; select a shape, set a distance, and get a new shape that distance out all the way around it. Useful for fire lanes, setbacks and laydown yards. It works on lines too, which gives you a corridor of a given width.</li>
   </ul>
   <h3>Editing</h3>
-  <p class="hint">Drag a corner handle to move it. Drag a hollow midpoint handle&rsquo;s spot by clicking it to add a corner. Right-click a corner to remove it. Drag anywhere inside a selected shape to slide the whole thing around.</p>
+  <p class="hint">Drag a corner handle to move it. Click a hollow midpoint handle to add a corner. Right-click a corner to remove it. Drag the blue grip at the centre of a selected shape to slide the whole thing around.</p>
+  <h3>Colour</h3>
+  <p class="hint">Each shape has a colour chip beside its name in the list. Click it to pick any colour; right-click it to go back to the default. Colours are saved with your work and carried into exported .kml and .geojson files.</p>
   <h3>Shortcuts</h3>
   <table class="keys">
     <tr><td><kbd>A</kbd></td><td>Area tool</td></tr>
