@@ -194,3 +194,6 @@ button.mini { padding: 2px 8px; font-size: 11px; }
    deleted -- but stops looking like part of the total. */
 .item.hid { opacity: .5; }
 .item.hid .big, .item.hid .nm { text-decoration: line-through; }
+
+.capLab { font-size: 11px; color: var(--dim); white-space: nowrap; }
+#captureMargin { width: 70px; }

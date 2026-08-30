@@ -90,6 +90,28 @@ class Api:
             log(traceback.format_exc())
             return None
 
+    def save_image(self, filename, b64):
+        """Native Save As for the capture. Base64 in, because the bridge to the
+        page carries text; returns the path written, or None if cancelled."""
+        import base64
+        import webview
+        try:
+            path = self._dialog(
+                webview.SAVE_DIALOG,
+                save_filename=filename,
+                file_types=("PNG image (*.png)", "All files (*.*)"),
+            )
+            if not path:
+                return None
+            if not os.path.splitext(path)[1]:
+                path += ".png"
+            with open(path, "wb") as fh:
+                fh.write(base64.b64decode(b64))
+            return path
+        except Exception:
+            log(traceback.format_exc())
+            return None
+
     def open_file(self):
         """Native Open. Returns {name, text} or None if cancelled."""
         import webview

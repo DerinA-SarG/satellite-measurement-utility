@@ -23,7 +23,12 @@ convenience.
 2. **Never fetch Google imagery from anything but the Map Tiles API.** The
    `mt0.google.com/vt` tile endpoint that circulates online violates Google's
    terms. The only sanctioned path is `createSession` then
-   `tile.googleapis.com/v1/2dtiles`, which is what `enableGoogle()` does.
+   `tile.googleapis.com/v1/2dtiles`, which is what `enableGoogle()` does. The
+   PNG capture never uses Google at all, whatever the map is showing: Google
+   forbids storing its tiles, and writing one to someone's disk is storing it.
+   Esri is licensed for this and serves tiles with CORS, which the capture also
+   needs -- without `crossOrigin` the canvas is tainted and `toDataURL` throws
+   instead of producing a file.
 3. **Keep Esri as the always-available fallback.** Google is opt-in and billed
    per tile; Esri is free and keyless. Any Google failure must fall back rather
    than leave a blank map.
@@ -45,14 +50,15 @@ app.css         styling, including the @media print stylesheet
 app.js          everything, in 15 numbered sections
 vendor/         Leaflet 1.9.4 + its licence
 desktop.py      native-window shell: loopback server + OS file dialogs
+                (save_file for text, save_image for the capture's base64 PNG)
 build_exe.py    generates icon.ico, then PyInstaller --onefile --windowed
 start.bat/.sh   run it in a browser
 ```
 
 `app.js` sections: 1 geodesy · 1b offset (full buffer and per-side) · 2 units ·
 3 state · 4 map/imagery · 5 shapes · 6 handles · 7 drawing · 8 offset UI ·
-9 sidebar · 10 export/import · 11 persistence · 12 search · 13 print ·
-14 wiring · 15 boot.
+9 sidebar · 10 export/import · 10b capture · 11 persistence · 12 search ·
+13 print · 14 wiring · 15 boot.
 
 Section 1 is pure maths with no DOM or Leaflet dependency — keep it that way so
 it stays testable in isolation.
@@ -98,6 +104,11 @@ rounding them, which makes a rectangle an exact test. Pushing one side of a
 there are no arcs to approximate. Check a reversed (clockwise) ring too: side
 `i` must always be the edge from `pts[i]` to `pts[i+1]` whichever way the ring
 was drawn, because that is what the numbered chips in the sidebar point at.
+
+*Capture* — `captureBounds(marginM)` must sit exactly `marginM` from the
+outermost shape on all four sides (check in a local frame, not in degrees), and
+must ignore hidden shapes entirely. `renderCapture` reports `missing`; a
+non-zero count means tiles failed and the image has holes in it.
 
 *In the browser* — open the page and run probes with the JS tool:
 

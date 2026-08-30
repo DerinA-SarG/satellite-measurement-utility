@@ -369,6 +369,7 @@ const state = {
   rate: null,
   labels: true,
   offsetDist: 100,
+  captureMargin: 150,
   gkey: ''
 };
 let nextId = 1;
@@ -917,6 +918,7 @@ function renderOffsetBox() {
   renderSides();
   $('offsetBtn').disabled = !sh || sh.hidden;
   $('offsetUnit').textContent = LEN_UNITS[state.lenUnit].label;
+  $('captureUnit').textContent = LEN_UNITS[state.lenUnit].label;
   if (!sh) $('offsetMsg').textContent = 'Select a shape to offset it.';
   else if (!$('offsetMsg').textContent.startsWith('Ring') &&
            !$('offsetMsg').textContent.startsWith('Corridor')) {
@@ -1039,6 +1041,23 @@ async function saveText(name, mime, text, what) {
     return;
   }
   download(name, mime, text);
+  ioMsg(what);
+}
+
+async function saveImage(name, canvas, what) {
+  const api = nativeApi();
+  if (api && api.save_image) {
+    const b64 = canvas.toDataURL('image/png').split(',')[1];
+    const path = await api.save_image(name, b64);
+    ioMsg(path ? `Saved to ${path}` : 'Save cancelled.');
+    return;
+  }
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
   ioMsg(what);
 }
 
@@ -1268,6 +1287,245 @@ function readFile(f) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 10b. Capture
+ *
+ * Draws every shape that is currently shown, plus a margin of open ground
+ * around them, into one PNG. The tiles are fetched again rather than scraped
+ * off the map: what is on screen is whatever the window happens to be showing
+ * at whatever zoom, and half a building at the edge of the viewport is not a
+ * measurement anybody can use.
+ *
+ * Imagery for the capture is always Esri. It is the keyless layer that is
+ * always available, it serves tiles with CORS so a canvas can read them back,
+ * and it is licensed for this. Google's Map Tiles API forbids storing its
+ * tiles, and a PNG on someone's disk is storing them.
+ * ------------------------------------------------------------------ */
+const CAPTURE_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const CAPTURE_ATTRIB = 'Imagery © Esri, Maxar, Earthstar Geographics';
+const CAPTURE_MAX_PX = 4600;   // per side; ~85 tiles at the widest
+const CAPTURE_MAX_Z = 20;      // Esri's deepest imagery
+const TILE = 256;
+
+const lon2px = (lon, z) => (lon + 180) / 360 * Math.pow(2, z) * TILE;
+const lat2px = (lat, z) => {
+  const s = Math.sin(Math.max(-85.05, Math.min(85.05, lat)) * D2R);
+  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * Math.pow(2, z) * TILE;
+};
+
+/** The area to capture: everything shown, plus `marginM` metres of ground. */
+function captureBounds(marginM) {
+  const shown = state.shapes.filter(s => !s.hidden && s.pts.length);
+  if (!shown.length) return null;
+
+  const pts = shown.flatMap(s => s.pts);
+  let latMin = 90, latMax = -90, lonMin = 180, lonMax = -180;
+  for (const p of pts) {
+    latMin = Math.min(latMin, p[0]); latMax = Math.max(latMax, p[0]);
+    lonMin = Math.min(lonMin, p[1]); lonMax = Math.max(lonMax, p[1]);
+  }
+  // Grow the box in metres, in a frame at its own centre, so the margin is the
+  // same distance on every side rather than the same number of degrees.
+  const f = frameAt((latMin + latMax) / 2, (lonMin + lonMax) / 2);
+  const sw = f.toXY(latMin, lonMin), ne = f.toXY(latMax, lonMax);
+  const a = f.toLL(sw[0] - marginM, sw[1] - marginM);
+  const b = f.toLL(ne[0] + marginM, ne[1] + marginM);
+  return { south: Math.min(a[0], b[0]), north: Math.max(a[0], b[0]),
+           west: Math.min(a[1], b[1]), east: Math.max(a[1], b[1]), shapes: shown };
+}
+
+/** The deepest zoom whose image still fits inside CAPTURE_MAX_PX. */
+function captureZoom(b) {
+  for (let z = CAPTURE_MAX_Z; z > 0; z--) {
+    const w = lon2px(b.east, z) - lon2px(b.west, z);
+    const h = lat2px(b.south, z) - lat2px(b.north, z);
+    if (w <= CAPTURE_MAX_PX && h <= CAPTURE_MAX_PX) return z;
+  }
+  return 1;
+}
+
+function loadTile(url) {
+  return new Promise(resolve => {
+    const img = new Image();
+    // Without this the canvas is tainted and toDataURL throws instead of
+    // producing a file.
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+function roundRect(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+/** Draws the capture and hands back the canvas. */
+async function renderCapture(marginM, onProgress) {
+  const b = captureBounds(marginM);
+  if (!b) return null;
+
+  const z = captureZoom(b);
+  const x0 = lon2px(b.west, z), y0 = lat2px(b.north, z);
+  const w = Math.max(1, Math.round(lon2px(b.east, z) - x0));
+  const h = Math.max(1, Math.round(lat2px(b.south, z) - y0));
+
+  // Everything drawn on top is sized off the image, not off the screen: a
+  // 3,000px capture annotated at 13px is a photograph with specks on it.
+  const k = Math.max(1, Math.min(3.5, Math.max(w, h) / 1300));
+  const bar = Math.round(26 * k);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h + bar;
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#0b0f14';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+
+  const tx0 = Math.floor(x0 / TILE), tx1 = Math.floor((x0 + w - 1) / TILE);
+  const ty0 = Math.floor(y0 / TILE), ty1 = Math.floor((y0 + h - 1) / TILE);
+  const jobs = [];
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      jobs.push({ tx, ty });
+    }
+  }
+
+  let done = 0, missing = 0;
+  // Eight at a time: enough to keep the connection busy, few enough that the
+  // tile server does not start refusing them.
+  const queue = jobs.slice();
+  const workers = Array.from({ length: 8 }, async () => {
+    for (let job = queue.shift(); job; job = queue.shift()) {
+      const url = CAPTURE_TILES.replace('{z}', z).replace('{x}', job.tx).replace('{y}', job.ty);
+      const img = await loadTile(url);
+      if (img) g.drawImage(img, job.tx * TILE - x0, job.ty * TILE - y0);
+      else missing++;
+      if (onProgress) onProgress(++done, jobs.length);
+    }
+  });
+  await Promise.all(workers);
+
+  // Shapes, in the order they are listed, over the imagery.
+  const px = (p) => [lon2px(p[1], z) - x0, lat2px(p[0], z) - y0];
+  for (const sh of b.shapes) {
+    const ring = sh.pts.map(px);
+    const c = colorOf(sh);
+    g.save();
+    g.lineJoin = 'round';
+    g.lineWidth = 3 * k;
+    g.strokeStyle = c;
+    if (sh.mode === 'subtract' && sh.kind !== 'line') g.setLineDash([9 * k, 6 * k]);
+    g.beginPath();
+    ring.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]));
+    if (sh.kind !== 'line') {
+      g.closePath();
+      g.fillStyle = c;
+      g.globalAlpha = 0.22;
+      g.fill();
+      g.globalAlpha = 1;
+    }
+    g.stroke();
+    g.restore();
+  }
+
+  // Labels last, so no outline is drawn over them.
+  if (state.labels) {
+    const fs = Math.round(13 * k);
+    g.font = `600 ${fs}px system-ui, "Segoe UI", Roboto, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    for (const sh of b.shapes) {
+      const m = sh.m || measureOf(sh.pts, sh.kind);
+      const has = sh.kind === 'line' ? m.len > 0 : m.area > 0;
+      if (!has) continue;
+      const lines = [sh.name, sh.kind === 'line' ? fmtLen(m.len)
+        : (sh.mode === 'subtract' ? '−' : '') + fmtArea(m.area)];
+      const at = px(m.anchor);
+      const wide = Math.max(...lines.map(t => g.measureText(t).width));
+      const lh = Math.round(fs * 1.3);
+      const bw = wide + 16 * k, bh = lines.length * lh + 8 * k;
+      g.fillStyle = 'rgba(8,12,18,0.78)';
+      roundRect(g, at[0] - bw / 2, at[1] - bh / 2, bw, bh, 5 * k);
+      g.fill();
+      g.fillStyle = '#eef4fb';
+      lines.forEach((t, i) => g.fillText(t, at[0], at[1] - bh / 2 + 4 * k + lh / 2 + i * lh));
+    }
+  }
+
+  // Bottom strip: what this is, how big the margin was, and whose imagery.
+  g.fillStyle = '#0b0f14';
+  g.fillRect(0, h, w, bar);
+  g.font = `${Math.round(12 * k)}px system-ui, "Segoe UI", Roboto, sans-serif`;
+  g.textBaseline = 'middle';
+  g.textAlign = 'left';
+  g.fillStyle = '#9fb0c2';
+  const unit = LEN_UNITS[state.lenUnit];
+  g.fillText(`${new Date().toLocaleDateString()} · ${b.shapes.length} shape` +
+             `${b.shapes.length === 1 ? '' : 's'} · ${num(marginM * unit.per_m, 0)} ` +
+             `${unit.label} margin`, 10 * k, h + bar / 2);
+  g.textAlign = 'right';
+  g.fillText(CAPTURE_ATTRIB, w - 10 * k, h + bar / 2);
+
+  // Scale bar, sized to a round number of the chosen unit.
+  const mPerPx = (b.east - b.west) * 111320 * Math.cos((b.north + b.south) / 2 * D2R) / w;
+  const targets = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+  const wantPx = Math.min(180 * k, w * 0.25);
+  let pick = targets[0];
+  for (const t of targets) if (t / unit.per_m / mPerPx <= wantPx) pick = t;
+  const barPx = pick / unit.per_m / mPerPx;
+  const bx = 12 * k, by = h - 20 * k;
+  g.fillStyle = 'rgba(8,12,18,0.72)';
+  roundRect(g, bx - 6 * k, by - 15 * k, barPx + 12 * k, 26 * k, 4 * k);
+  g.fill();
+  g.strokeStyle = '#eef4fb';
+  g.lineWidth = 2 * k;
+  g.beginPath();
+  g.moveTo(bx, by); g.lineTo(bx + barPx, by);
+  g.moveTo(bx, by - 4 * k); g.lineTo(bx, by + 4 * k);
+  g.moveTo(bx + barPx, by - 4 * k); g.lineTo(bx + barPx, by + 4 * k);
+  g.stroke();
+  g.fillStyle = '#eef4fb';
+  g.textAlign = 'center';
+  g.font = `${Math.round(11 * k)}px system-ui, "Segoe UI", Roboto, sans-serif`;
+  g.fillText(`${num(pick, 0)} ${unit.label}`, bx + barPx / 2, by - 8 * k);
+
+  return { canvas, zoom: z, width: w, height: h, missing, shapes: b.shapes.length };
+}
+
+async function doCapture() {
+  const v = parseFloat($('captureMargin').value);
+  if (!(v >= 0)) { ioMsg('Enter a margin of zero or more.'); return; }
+  state.captureMargin = v;
+  const metres = v / LEN_UNITS[state.lenUnit].per_m;
+
+  const shown = state.shapes.filter(s => !s.hidden);
+  if (!shown.length) { ioMsg('Nothing to capture — every shape is hidden.'); return; }
+
+  const btn = $('captureBtn');
+  btn.disabled = true;
+  ioMsg('Fetching imagery…');
+  try {
+    const out = await renderCapture(metres, (done, total) => {
+      if (done % 8 === 0 || done === total) ioMsg(`Fetching imagery… ${done}/${total} tiles`);
+    });
+    if (!out) { ioMsg('Nothing to capture.'); return; }
+    const note = out.missing ? ` (${out.missing} tile${out.missing === 1 ? '' : 's'} did not load)` : '';
+    await saveImage(`site-capture-${stamp()}.png`, out.canvas,
+      `Saved ${out.width}×${out.height} at zoom ${out.zoom}${note}.`);
+  } catch (e) {
+    ioMsg('Could not build the image: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    save();
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * 11. Persistence
  * ------------------------------------------------------------------ */
 let saveTimer = null;
@@ -1282,7 +1540,8 @@ function save() {
         view: { c: [c.lat, c.lng], z: map.getZoom() },
         areaUnit: state.areaUnit, lenUnit: state.lenUnit,
         pitch: state.pitch, rate: state.rate, labels: state.labels,
-        offsetDist: state.offsetDist, gkey: state.gkey
+        offsetDist: state.offsetDist, captureMargin: state.captureMargin,
+        gkey: state.gkey
       }));
       $('saveState').textContent = 'Saved in this browser · ' +
         new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -1302,6 +1561,7 @@ function restore() {
   state.rate = d.rate || null;
   state.labels = d.labels !== false;
   state.offsetDist = d.offsetDist || 100;
+  state.captureMargin = d.captureMargin ?? 150;
   state.gkey = d.gkey || '';
   $('areaUnit').value = state.areaUnit;
   $('lenUnit').value = state.lenUnit;
@@ -1309,6 +1569,7 @@ function restore() {
   $('rate').value = state.rate ?? '';
   $('showLabels').checked = state.labels;
   $('offsetDist').value = state.offsetDist;
+  $('captureMargin').value = state.captureMargin;
   $('gkey').value = state.gkey;
   (d.shapes || []).forEach(s => addShape(s.pts, { name: s.name, mode: s.mode, kind: s.kind,
                                                   color: s.color, hidden: s.hidden }));
@@ -1411,6 +1672,11 @@ $('sidesNone').addEventListener('click', () => {
   if (!sh) return;
   sidePick = { id: sh.id, sides: new Set() };
   renderAll(); drawSideHighlight();
+});
+$('captureBtn').addEventListener('click', doCapture);
+$('captureMargin').addEventListener('input', (e) => {
+  const v = parseFloat(e.target.value);
+  if (v >= 0) { state.captureMargin = v; save(); }
 });
 $('showAll').addEventListener('click', () => setAllHidden(false));
 $('hideAll').addEventListener('click', () => setAllHidden(true));
