@@ -159,3 +159,38 @@ dialog button{margin-top:16px}
   #printSheet tfoot td{border-top:1.5px solid #000;border-bottom:none;font-weight:700;font-size:11.5pt;padding-top:4mm}
   #printSheet .note{font-size:8.5pt;color:#555;margin-top:8mm;line-height:1.5}
 }
+
+/* Sides picker, list header and hidden shapes ----------------------------- */
+.sides { margin-top: 8px; }
+.sidesHead {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--dim); margin-bottom: 6px;
+}
+.sidesHead em { font-style: normal; text-transform: none; letter-spacing: 0; }
+.sidesBtns { display: flex; gap: 6px; }
+button.mini { padding: 2px 8px; font-size: 11px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  min-width: 26px; padding: 3px 6px; font-size: 11px; line-height: 1;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg2); color: var(--dim); cursor: pointer;
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #f8fbff; font-weight: 600; }
+.chip:hover { border-color: var(--accent); }
+
+.listHead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-top: 0; padding-bottom: 6px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim);
+}
+
+.item .eye {
+  border: none; background: none; cursor: pointer; padding: 0 2px;
+  font-size: 13px; line-height: 1; filter: grayscale(1); opacity: .75;
+}
+.item .eye:hover { opacity: 1; filter: none; }
+/* A hidden shape keeps its figures readable -- it is being judged, not
+   deleted -- but stops looking like part of the total. */
+.item.hid { opacity: .5; }
+.item.hid .big, .item.hid .nm { text-decoration: line-through; }

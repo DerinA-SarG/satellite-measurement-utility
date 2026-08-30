@@ -49,9 +49,10 @@ build_exe.py    generates icon.ico, then PyInstaller --onefile --windowed
 start.bat/.sh   run it in a browser
 ```
 
-`app.js` sections: 1 geodesy · 1b offset · 2 units · 3 state · 4 map/imagery ·
-5 shapes · 6 handles · 7 drawing · 8 offset UI · 9 sidebar · 10 export/import ·
-11 persistence · 12 search · 13 print · 14 wiring · 15 boot.
+`app.js` sections: 1 geodesy · 1b offset (full buffer and per-side) · 2 units ·
+3 state · 4 map/imagery · 5 shapes · 6 handles · 7 drawing · 8 offset UI ·
+9 sidebar · 10 export/import · 11 persistence · 12 search · 13 print ·
+14 wiring · 15 boot.
 
 Section 1 is pure maths with no DOM or Leaflet dependency — keep it that way so
 it stays testable in isolation.
@@ -90,6 +91,14 @@ Check that, and separately assert that **every** output vertex sits exactly `d`
 from the source via `distToPath`. Expect ≤0.02% on area (the residual is the
 polygon approximation of the corner arcs) and exact on distance.
 
+*Partial offset* — `offsetSides(pts, d, sides)` mitres its corners instead of
+rounding them, which makes a rectangle an exact test. Pushing one side of a
+`w × h` rectangle out by `d` gives exactly `A + wd`; two adjacent sides give
+`A + (w+h)d + d²`; all four give `A + Pd + 4d²`. Expect 0.000% on each --
+there are no arcs to approximate. Check a reversed (clockwise) ring too: side
+`i` must always be the edge from `pts[i]` to `pts[i+1]` whichever way the ring
+was drawn, because that is what the numbered chips in the sidebar point at.
+
 *In the browser* — open the page and run probes with the JS tool:
 
 ```js
@@ -104,9 +113,13 @@ Check `read_console_messages` for errors after every change.
 
 - Plain ES2020, no framework, no build. Strict mode, `const`/`let`.
 - Two-space indent in JS/CSS/HTML, four in Python.
-- Shapes are `{id, name, kind:'area'|'line', mode:'add'|'subtract', color, pts}`
-  where `pts` is `[[lat,lng],…]`, unclosed. Closing points are added only at
-  export time.
+- Shapes are `{id, name, kind:'area'|'line', mode:'add'|'subtract', color,
+  hidden, pts}` where `pts` is `[[lat,lng],…]`, unclosed. Closing points are
+  added only at export time.
+- `hidden` is a view decision: the shape leaves the map and the totals but
+  stays in the list, in the save file, and in both export formats -- KML says
+  it with its own `<visibility>` tag, GeoJSON with a `hidden` property. Anything
+  that sums shapes has to skip it; anything that lists them must not.
 - Colour is `null` when the shape uses its kind/mode default; `colorOf()`
   resolves it. Never write the default into `color`.
 - Comments explain *why*, not *what*. Match the existing density — sparse, with

@@ -235,6 +235,96 @@ function offsetGeometry(pts, kind, d) {
   return outXY.map(p => f.toLL(p[0], p[1]));
 }
 
+/* Offsets only the sides named in `sides`, which are edge indices into the
+ * original point list: edge i runs from pts[i] to pts[i+1].
+ *
+ * The full buffer above rounds its corners because every edge moves by the
+ * same distance and the corner has to be filled in. Here neighbouring edges
+ * can move by different amounts, so the corner is simply where the two moved
+ * edge lines now cross -- a mitre. That is also what a setback on two sides of
+ * a building looks like on the ground: the walls stay straight and meet at a
+ * point. A corner between edges that both stayed put does not move at all.
+ *
+ * A very acute corner throws the mitre a long way out, so past four times the
+ * offset it is cut off square instead.
+ */
+function offsetSides(pts, d, sides) {
+  if (!(d > 0) || pts.length < 3 || !sides || !sides.size) return null;
+
+  const c = centreOf(pts);
+  const f = frameAt(c[0], c[1]);
+  const xy = pts.map(p => f.toXY(p[0], p[1]));
+  const n = xy.length;
+
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    const a = xy[i], b = xy[(i + 1) % n];
+    s += a[0] * b[1] - b[0] * a[1];
+  }
+  // Work counter-clockwise so the right of travel is always the outside; on a
+  // reversed ring, ring edge i is the original edge n-2-i.
+  const ccw = s >= 0;
+  const ring = ccw ? xy : xy.slice().reverse();
+  const srcOf = (i) => ccw ? i : (n - 2 - i + n) % n;
+
+  const lines = [];
+  for (let i = 0; i < n; i++) {
+    const a = ring[i], b = ring[(i + 1) % n];
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const L = Math.hypot(dx, dy);
+    if (L < 1e-9) return null;
+    const nx = dy / L, ny = -dx / L;
+    const push = sides.has(srcOf(i)) ? d : 0;
+    lines.push({
+      v: [dx / L, dy / L],
+      a: [a[0] + nx * push, a[1] + ny * push],
+      b: [b[0] + nx * push, b[1] + ny * push]
+    });
+  }
+
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const prev = lines[(i - 1 + n) % n], cur = lines[i];
+    const cross = prev.v[0] * cur.v[1] - prev.v[1] * cur.v[0];
+    if (Math.abs(cross) < 1e-9) { out.push(cur.a); continue; }   // straight through
+    const wx = cur.a[0] - prev.a[0], wy = cur.a[1] - prev.a[1];
+    const t = (wx * cur.v[1] - wy * cur.v[0]) / cross;
+    const hit = [prev.a[0] + prev.v[0] * t, prev.a[1] + prev.v[1] * t];
+    if (Math.hypot(hit[0] - ring[i][0], hit[1] - ring[i][1]) > d * 4) {
+      out.push(prev.b, cur.a);                                    // bevel
+    } else {
+      out.push(hit);
+    }
+  }
+
+  const tol = Math.max(d * 1e-6, 1e-9);
+  const clean = [];
+  for (const q of out) {
+    const last = clean[clean.length - 1];
+    if (!last || Math.hypot(q[0] - last[0], q[1] - last[1]) > tol) clean.push(q);
+  }
+  if (clean.length > 2) {
+    const a = clean[0], b = clean[clean.length - 1];
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol) clean.pop();
+  }
+  if (clean.length < 3) return null;
+  return clean.map(q => f.toLL(q[0], q[1]));
+}
+
+/* The length of each side, in metres, in the order the sides are numbered. */
+function sideLengths(pts) {
+  if (pts.length < 2) return [];
+  const c = centreOf(pts);
+  const f = frameAt(c[0], c[1]);
+  const xy = pts.map(p => f.toXY(p[0], p[1]));
+  const out = [];
+  for (let i = 0; i < xy.length; i++) {
+    const a = xy[i], b = xy[(i + 1) % xy.length];
+    out.push(Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ *
  * 2. Units
  * ------------------------------------------------------------------ */
@@ -392,11 +482,15 @@ function addShape(pts, opts = {}) {
     kind,
     mode: opts.mode === 'subtract' ? 'subtract' : 'add',
     color: opts.color || null,
+    // Hidden shapes stay in the list and in the saved file. They are off the
+    // map and out of the totals, which is the whole point of the toggle.
+    hidden: !!opts.hidden,
     pts,
     layer: null,
     label: null
   };
-  sh.layer = (kind === 'line' ? L.polyline(pts, styleFor(sh)) : L.polygon(pts, styleFor(sh))).addTo(map);
+  sh.layer = kind === 'line' ? L.polyline(pts, styleFor(sh)) : L.polygon(pts, styleFor(sh));
+  if (!sh.hidden) sh.layer.addTo(map);
   sh.layer.on('click', (e) => { L.DomEvent.stop(e); if (!tool) select(sh.id); });
   sh.layer.on('mousedown', (e) => startMove(sh, e));
   state.shapes.push(sh);
@@ -431,9 +525,13 @@ function refreshShape(sh) {
   sh.layer.setStyle(styleFor(sh));
   const m = measureOf(sh.pts, sh.kind);
   sh.m = m;
+  // Measured either way: a hidden shape still shows its own figure in the
+  // list, so it can be judged before being counted again.
+  if (sh.hidden && map.hasLayer(sh.layer)) map.removeLayer(sh.layer);
+  if (!sh.hidden && !map.hasLayer(sh.layer)) sh.layer.addTo(map);
   if (sh.label) { map.removeLayer(sh.label); sh.label = null; }
   const has = sh.kind === 'line' ? m.len > 0 : m.area > 0;
-  if (state.labels && has) {
+  if (state.labels && has && !sh.hidden) {
     sh.label = L.tooltip({ permanent: true, direction: 'center', className: 'measure-label', interactive: false })
       .setLatLng(m.anchor).setContent(labelFor(sh, m)).addTo(map);
   }
@@ -455,8 +553,26 @@ function select(id) {
   clearHandles();
   state.shapes.forEach(s => s.layer.setStyle(styleFor(s)));
   const sh = state.shapes.find(s => s.id === id);
-  if (sh) buildHandles(sh);
+  // A hidden shape can be selected from the list -- to rename it, or to bring
+  // it back -- but it has no outline on the map to hang edit handles off.
+  if (sh && !sh.hidden) buildHandles(sh);
+  sidePick = { id: sh && !sh.hidden && sh.kind === 'area' ? id : null, sides: null };
   renderAll();
+  drawSideHighlight();
+}
+
+/** Show or hide one shape. */
+function setHidden(sh, hidden) {
+  sh.hidden = !!hidden;
+  if (sh.hidden && state.selected === sh.id) select(null);
+  else { refreshShape(sh); renderAll(); save(); }
+}
+
+/** Both buttons under the list. */
+function setAllHidden(hidden) {
+  state.shapes.forEach(s => { s.hidden = !!hidden; refreshShape(s); });
+  if (hidden) select(null);
+  else { renderAll(); save(); }
 }
 
 const selectedShape = () => state.shapes.find(s => s.id === state.selected) || null;
@@ -697,17 +813,31 @@ function doOffset() {
   if (!(v > 0)) { $('offsetMsg').textContent = 'Enter a distance greater than zero.'; return; }
   state.offsetDist = v;
   const metres = v / LEN_UNITS[state.lenUnit].per_m;
-  const pts = offsetGeometry(sh.pts, sh.kind, metres);
+
+  // A full ring keeps the rounded-corner buffer, which is the validated one.
+  // A subset mitres its corners instead -- see offsetSides.
+  const sides = pickedSides(sh);
+  const partial = sides && sides.size < sh.pts.length;
+  if (sides && !sides.size) {
+    $('offsetMsg').textContent = 'Pick at least one side, or select them all.';
+    return;
+  }
+  const pts = partial
+    ? offsetSides(sh.pts, metres, sides)
+    : offsetGeometry(sh.pts, sh.kind, metres);
   if (!pts) {
     $('offsetMsg').textContent = 'That distance collapses the shape — try a smaller one.';
     return;
   }
-  const made = addShape(pts, { name: `${sh.name} +${num(v, 0)} ${LEN_UNITS[state.lenUnit].label}`, kind: 'area' });
+  const label = partial
+    ? `${sh.name} +${num(v, 0)} ${LEN_UNITS[state.lenUnit].label} (${sides.size} side${sides.size === 1 ? '' : 's'})`
+    : `${sh.name} +${num(v, 0)} ${LEN_UNITS[state.lenUnit].label}`;
+  const made = addShape(pts, { name: label, kind: 'area' });
   renderAll(); save();
   select(made.id);
   const ring = made.m.area - (sh.kind === 'area' ? sh.m.area : 0);
   $('offsetMsg').innerHTML = sh.kind === 'area'
-    ? `Ring alone is ${fmtArea(ring)}.`
+    ? `Added strip is ${fmtArea(ring)}.`
     : `Corridor ${fmtLen(metres * 2)} wide.`;
 }
 
@@ -721,28 +851,101 @@ function escapeHtml(s) {
 
 function renderAll() { renderList(); renderTotals(); drawHint(); renderOffsetBox(); }
 
+/* Which sides of the selected polygon the offset should push out. `sides` of
+   null means all of them, which is the plain buffer. */
+let sidePick = { id: null, sides: null };
+let sideLayer = null;
+
+function pickedSides(sh) {
+  if (!sh || sh.kind !== 'area') return null;
+  if (sidePick.id !== sh.id || !sidePick.sides) return null;
+  return sidePick.sides;
+}
+
+function drawSideHighlight() {
+  if (sideLayer) { map.removeLayer(sideLayer); sideLayer = null; }
+  const sh = selectedShape();
+  const sides = pickedSides(sh);
+  if (!sh || !sides || sides.size === sh.pts.length) return;
+  const segs = [];
+  for (const i of sides) {
+    segs.push([sh.pts[i], sh.pts[(i + 1) % sh.pts.length]]);
+  }
+  if (!segs.length) return;
+  sideLayer = L.polyline(segs, {
+    color: '#fff', weight: 7, opacity: 0.85, dashArray: '2 8', lineCap: 'round'
+  }).addTo(map);
+}
+
+function renderSides() {
+  const box = $('sidesBox'), chips = $('sidesChips');
+  const sh = selectedShape();
+  if (!sh || sh.kind !== 'area' || sh.hidden) { box.hidden = true; chips.innerHTML = ''; return; }
+
+  box.hidden = false;
+  if (sidePick.id !== sh.id) sidePick = { id: sh.id, sides: null };
+  const lens = sideLengths(sh.pts);
+  chips.innerHTML = '';
+  lens.forEach((len, i) => {
+    const on = !sidePick.sides || sidePick.sides.has(i);
+    const b = document.createElement('button');
+    b.className = 'chip' + (on ? ' on' : '');
+    b.textContent = String(i + 1);
+    b.title = `Side ${i + 1} — ${fmtLen(len)}`;
+    b.addEventListener('click', () => {
+      // The first click on a chip turns the implicit "all sides" into a real
+      // set, so that unticking one side leaves the rest selected.
+      const sides = sidePick.sides || new Set(lens.map((_, k) => k));
+      if (sides.has(i)) sides.delete(i); else sides.add(i);
+      sidePick = { id: sh.id, sides };
+      renderSides();
+      drawSideHighlight();
+    });
+    b.addEventListener('mouseenter', () => b.classList.add('hot'));
+    b.addEventListener('mouseleave', () => b.classList.remove('hot'));
+    chips.appendChild(b);
+  });
+
+  const picked = sidePick.sides ? sidePick.sides.size : lens.length;
+  $('sidesCount').textContent = picked === lens.length
+    ? `all ${lens.length} sides`
+    : `${picked} of ${lens.length} sides`;
+}
+
 function renderOffsetBox() {
   const sh = selectedShape();
-  $('offsetBtn').disabled = !sh;
+  renderSides();
+  $('offsetBtn').disabled = !sh || sh.hidden;
   $('offsetUnit').textContent = LEN_UNITS[state.lenUnit].label;
   if (!sh) $('offsetMsg').textContent = 'Select a shape to offset it.';
   else if (!$('offsetMsg').textContent.startsWith('Ring') &&
            !$('offsetMsg').textContent.startsWith('Corridor')) {
-    $('offsetMsg').textContent = `Offsets “${sh.name}” outward all the way around.`;
+    const sides = pickedSides(sh);
+    $('offsetMsg').textContent = sides
+      ? `Pushes ${sides.size} side${sides.size === 1 ? '' : 's'} of “${sh.name}” outward.`
+      : `Offsets “${sh.name}” outward all the way around.`;
   }
 }
 
 function renderList() {
   const box = $('list');
   box.innerHTML = '';
+  const hiddenCount = state.shapes.filter(s => s.hidden).length;
+  $('listHead').hidden = !state.shapes.length;
+  $('listCount').textContent = state.shapes.length
+    ? `${state.shapes.length} shape${state.shapes.length > 1 ? 's' : ''}` +
+      (hiddenCount ? ` · ${hiddenCount} hidden` : '')
+    : '';
   for (const sh of state.shapes) {
     const m = sh.m || measureOf(sh.pts, sh.kind);
     const isLine = sh.kind === 'line';
     const el = document.createElement('div');
     el.className = 'item' + (state.selected === sh.id ? ' sel' : '') +
-                   (sh.mode === 'subtract' && !isLine ? ' subtract' : '') + (isLine ? ' line' : '');
+                   (sh.mode === 'subtract' && !isLine ? ' subtract' : '') + (isLine ? ' line' : '') +
+                   (sh.hidden ? ' hid' : '');
     el.innerHTML =
       `<div class="top">
+         <button class="eye" title="${sh.hidden ? 'Show on the map and count it' : 'Hide it and leave it out of the total'}">${sh.hidden ? '&#128584;' : '&#128065;'}</button>
          <input type="color" class="swatch" value="${colorOf(sh)}" title="Change colour">
          <input class="nm" value="${escapeHtml(sh.name)}" spellcheck="false">
          ${isLine ? '' : `<button class="pm" title="Add to / subtract from the total">${sh.mode === 'subtract' ? '&minus;' : '+'}</button>`}
@@ -772,6 +975,7 @@ function renderList() {
       sh.mode = sh.mode === 'add' ? 'subtract' : 'add';
       refreshShape(sh); renderAll(); save();
     });
+    el.querySelector('.eye').addEventListener('click', () => setHidden(sh, !sh.hidden));
     el.querySelector('.x').addEventListener('click', () => removeShape(sh.id));
     box.appendChild(el);
   }
@@ -780,6 +984,7 @@ function renderList() {
 function totals() {
   let add = 0, sub = 0, perim = 0, lineLen = 0, lines = 0;
   for (const sh of state.shapes) {
+    if (sh.hidden) continue;
     const m = sh.m || measureOf(sh.pts, sh.kind);
     if (sh.kind === 'line') { lineLen += m.len; lines++; continue; }
     if (sh.mode === 'subtract') sub += m.area;
@@ -793,7 +998,8 @@ function renderTotals() {
   const pf = pitchFactor();
   const roof = t.net * pf;
   const u = AREA_UNITS[state.areaUnit];
-  const areas = state.shapes.filter(s => s.kind !== 'line').length;
+  const areas = state.shapes.filter(s => s.kind !== 'line' && !s.hidden).length;
+  const hiddenCount = state.shapes.filter(s => s.hidden).length;
   let html = `<div class="lab">Total${areas ? ` &middot; ${areas} shape${areas > 1 ? 's' : ''}` : ''}</div>
     <div class="num">${fmtArea(roof)}</div>`;
   const bits = [];
@@ -802,6 +1008,7 @@ function renderTotals() {
   if (state.areaUnit !== 'acre' && roof > 0) bits.push(`${num(roof / 4046.8564224, 2)} acres`);
   if (t.perim > 0) bits.push(`${fmtLen(t.perim)} total perimeter`);
   if (t.lines > 0) bits.push(`${fmtLen(t.lineLen)} across ${t.lines} line${t.lines > 1 ? 's' : ''}`);
+  if (hiddenCount) bits.push(`${hiddenCount} hidden, not counted`);
   if (bits.length) html += `<div class="sub">${bits.join('<br>')}</div>`;
   if (state.rate > 0 && roof > 0) {
     const cost = roof * u.per_m2 * state.rate;
@@ -864,6 +1071,7 @@ function toKml() {
     </Polygon>`;
     return `  <Placemark>
     <name>${escapeHtml(sh.name)}</name>
+    <visibility>${sh.hidden ? 0 : 1}</visibility>
     <description><![CDATA[${desc.filter(Boolean).join('<br>')}]]></description>
     <Style>
       <LineStyle><color>${kmlColor(col, 'ff')}</color><width>2.4</width></LineStyle>
@@ -873,6 +1081,7 @@ function toKml() {
       <Data name="kind"><value>${sh.kind}</value></Data>
       <Data name="mode"><value>${sh.mode}</value></Data>
       <Data name="color"><value>${col}</value></Data>
+      <Data name="hidden"><value>${sh.hidden ? 1 : 0}</value></Data>
       ${isLine ? `<Data name="length_m"><value>${m.len.toFixed(3)}</value></Data>`
                : `<Data name="area_sqm"><value>${m.area.toFixed(3)}</value></Data>`}
     </ExtendedData>
@@ -900,10 +1109,11 @@ function toGeoJson() {
       return {
         type: 'Feature',
         properties: isLine
-          ? { name: sh.name, kind: 'line', length_m: +m.len.toFixed(3),
+          ? { name: sh.name, kind: 'line', hidden: !!sh.hidden,
+              length_m: +m.len.toFixed(3),
               length_ft: +(m.len * 3.280839895013123).toFixed(1),
               stroke: colorOf(sh) }
-          : { name: sh.name, kind: 'area', mode: sh.mode,
+          : { name: sh.name, kind: 'area', mode: sh.mode, hidden: !!sh.hidden,
               area_sqm: +m.area.toFixed(3),
               area_sqft: +(m.area * 10.763910416709722).toFixed(1),
               perimeter_m: +m.perim.toFixed(3),
@@ -951,6 +1161,12 @@ function importKml(text) {
         if (v && v.textContent.trim() === 'subtract') mode = 'subtract';
       }
     }
+    // <visibility> is KML's own way of saying this, so a file from Google
+    // Earth arrives with its hidden placemarks already hidden.
+    let hidden = false;
+    const vis = pm.getElementsByTagNameNS('*', 'visibility')[0];
+    if (vis && vis.textContent.trim() === '0') hidden = true;
+
     const styleUrl = pm.getElementsByTagNameNS('*', 'styleUrl')[0];
     if (styleUrl && styleUrl.textContent.trim() === '#subtract') mode = 'subtract';
     let color = null;
@@ -974,11 +1190,11 @@ function importKml(text) {
     }
     polys.forEach((r, i) => {
       const pts = dedupeRing(r, true);
-      if (pts.length >= 3) found.push({ pts, kind: 'area', mode, color, name: polys.length > 1 ? `${base} ${i + 1}` : base });
+      if (pts.length >= 3) found.push({ pts, kind: 'area', mode, color, hidden, name: polys.length > 1 ? `${base} ${i + 1}` : base });
     });
     lines.forEach((r, i) => {
       const pts = dedupeRing(r, false);
-      if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', color, name: lines.length > 1 ? `${base} ${i + 1}` : base });
+      if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', color, hidden, name: lines.length > 1 ? `${base} ${i + 1}` : base });
     });
   }
   return found;
@@ -999,6 +1215,7 @@ function importGeoJson(text) {
       runs.forEach((r, i) => {
         const pts = dedupeRing(r.map(c => [c[1], c[0]]), false);
         if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', color: props.stroke || null,
+                                          hidden: !!props.hidden,
                                           name: nm + (runs.length > 1 ? ` ${i + 1}` : '') });
       });
       return;
@@ -1010,6 +1227,7 @@ function importGeoJson(text) {
       if (pts.length >= 3) {
         found.push({ pts, kind: 'area', name: nm + (polys.length > 1 ? ` ${i + 1}` : ''),
                      color: props.fill || props.stroke || null,
+                     hidden: !!props.hidden,
                      mode: props.mode === 'subtract' ? 'subtract' : 'add' });
       }
     });
@@ -1019,8 +1237,9 @@ function importGeoJson(text) {
 
 function loadFound(found, label) {
   if (!found.length) { ioMsg('No shapes found in that file.'); return; }
-  found.forEach(f => addShape(f.pts, { name: f.name, mode: f.mode, kind: f.kind, color: f.color }));
-  const all = state.shapes.flatMap(s => s.pts);
+  found.forEach(f => addShape(f.pts, { name: f.name, mode: f.mode, kind: f.kind,
+                                      color: f.color, hidden: f.hidden }));
+  const all = state.shapes.filter(s => !s.hidden).flatMap(s => s.pts);
   if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.15));
   renderAll(); save();
   ioMsg(`Loaded ${found.length} shape${found.length > 1 ? 's' : ''} from ${label}.`);
@@ -1059,7 +1278,7 @@ function save() {
       const c = map.getCenter();
       localStorage.setItem(STORE_KEY, JSON.stringify({
         shapes: state.shapes.map(s => ({ name: s.name, kind: s.kind, mode: s.mode,
-                                         color: s.color, pts: s.pts })),
+                                         color: s.color, hidden: s.hidden, pts: s.pts })),
         view: { c: [c.lat, c.lng], z: map.getZoom() },
         areaUnit: state.areaUnit, lenUnit: state.lenUnit,
         pitch: state.pitch, rate: state.rate, labels: state.labels,
@@ -1092,7 +1311,7 @@ function restore() {
   $('offsetDist').value = state.offsetDist;
   $('gkey').value = state.gkey;
   (d.shapes || []).forEach(s => addShape(s.pts, { name: s.name, mode: s.mode, kind: s.kind,
-                                                  color: s.color }));
+                                                  color: s.color, hidden: s.hidden }));
   if (d.view) map.setView(d.view.c, d.view.z);
   return true;
 }
@@ -1142,7 +1361,7 @@ async function doSearch() {
 function buildPrintSheet() {
   const t = totals(), pf = pitchFactor();
   const u = AREA_UNITS[state.areaUnit];
-  const rows = state.shapes.map(sh => {
+  const rows = state.shapes.filter(sh => !sh.hidden).map(sh => {
     const m = sh.m || measureOf(sh.pts, sh.kind);
     if (sh.kind === 'line') {
       return `<tr><td>${escapeHtml(sh.name)} (line)</td><td>&mdash;</td>
@@ -1181,6 +1400,20 @@ $('searchBtn').addEventListener('click', doSearch);
 $('search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
 $('offsetBtn').addEventListener('click', doOffset);
+$('sidesAll').addEventListener('click', () => {
+  const sh = selectedShape();
+  if (!sh) return;
+  sidePick = { id: sh.id, sides: null };      // null is every side, the plain buffer
+  renderAll(); drawSideHighlight();
+});
+$('sidesNone').addEventListener('click', () => {
+  const sh = selectedShape();
+  if (!sh) return;
+  sidePick = { id: sh.id, sides: new Set() };
+  renderAll(); drawSideHighlight();
+});
+$('showAll').addEventListener('click', () => setAllHidden(false));
+$('hideAll').addEventListener('click', () => setAllHidden(true));
 $('offsetDist').addEventListener('input', (e) => {
   const v = parseFloat(e.target.value);
   if (v > 0) { state.offsetDist = v; save(); }

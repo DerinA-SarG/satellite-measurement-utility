@@ -44,6 +44,16 @@
         <span id="offsetUnit" class="unitTag">ft</span>
         <button id="offsetBtn" disabled>Create</button>
       </div>
+      <div id="sidesBox" class="sides" hidden>
+        <div class="sidesHead">
+          <span>Sides <em id="sidesCount"></em></span>
+          <span class="sidesBtns">
+            <button id="sidesAll" class="ghost mini">All</button>
+            <button id="sidesNone" class="ghost mini">None</button>
+          </span>
+        </div>
+        <div id="sidesChips" class="chips"></div>
+      </div>
       <div id="offsetMsg" class="hint">Select a shape to offset it.</div>
     </div>
 
@@ -67,6 +77,13 @@
       </label>
     </div>
 
+    <div class="pad listHead" id="listHead" hidden>
+      <span id="listCount"></span>
+      <span class="sidesBtns">
+        <button id="showAll" class="ghost mini">Show all</button>
+        <button id="hideAll" class="ghost mini">Hide all</button>
+      </span>
+    </div>
     <div id="list" class="list"></div>
 
     <div id="totals" class="totals"></div>
