@@ -84,6 +84,7 @@
     <div class="pad listHead" id="listHead" hidden>
       <span id="listCount"></span>
       <span class="sidesBtns">
+        <button id="mergeBtn" class="mini" hidden>Merge</button>
         <button id="showAll" class="ghost mini">Show all</button>
         <button id="hideAll" class="ghost mini">Hide all</button>
       </span>
@@ -168,10 +169,15 @@
   <ul>
     <li><b>Area</b> &mdash; click each corner of the roof, then double-click or press Enter to close it.</li>
     <li><b>Line</b> &mdash; click along a route for a distance. Each segment is measured as well as the total.</li>
-    <li><b>Offset</b> &mdash; select a shape, set a distance, and get a new shape covering the ground that distance outside it. It is only the added strip: the shape you offset is left alone and is not counted twice. All the way round that strip is a ring with the original left out of the middle of it; along a few sides it is a band, and sides on opposite walls come out as separate shapes. Useful for fire lanes, setbacks and laydown yards. It works on lines too, which gives you a corridor of a given width.</li>
+    <li><b>Offset</b> &mdash; select a shape, set a distance, and get a new shape covering the ground that distance outside it. It is only the added strip: the shape you offset is left alone and is not counted twice. All the way round that strip is a ring with the original left out of the middle of it; along a few sides it is a band, and sides on opposite walls come out as separate shapes. Corners are mitred, so the ring has as many of them as the building does and can still be nudged by hand. Useful for fire lanes, setbacks and laydown yards. It works on lines too, which gives you a corridor of a given width &mdash; those keep rounded ends.</li>
   </ul>
   <h3>Editing</h3>
   <p class="hint">Drag a corner handle to move it. Click a hollow midpoint handle to add a corner. Right-click a corner to remove it. Drag the blue grip at the centre of a selected shape to slide the whole thing around. <kbd>Ctrl</kbd>+<kbd>Z</kbd> takes back the last change &mdash; a move, a new shape, a deletion, even Clear.</p>
+  <h3>Merging</h3>
+  <p class="hint">Select an area, then <kbd>Ctrl</kbd>+click others &mdash; in the list or on the
+  map &mdash; and press <b>Merge</b>. They become one shape following the outside of all of them.
+  Ground covered by two of them at once is counted once from then on, and any gap left enclosed in
+  the middle becomes a hole rather than being filled in. Areas that do not touch are left alone.</p>
   <h3>Picking sides</h3>
   <p class="hint">With an area selected, <b>Numbers</b> puts each side&rsquo;s number on the map,
   at the middle of that side. Click a number, or the matching chip in the sidebar, to take that

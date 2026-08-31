@@ -50,14 +50,22 @@ SmartScreen will warn anyone who downloads it — "More info → Run anyway".
    nothing is counted twice. All the way round, the new shape is a ring with
    the original left out of the middle of it. Along a few sides it is a band,
    and sides on opposite walls come out as separate shapes, because that is
-   what they are on the ground. **Numbers** puts each side’s number on the map
-   beside the side it names; click one there, or the matching chip, to take
-   that side in or out. Good for fire lanes, setbacks and laydown yards. It
-   works on lines too, which gives you a corridor of a set width.
-5. The `+` button next to an area flips it to **subtract**, so you can cut a
+   what they are on the ground. Corners are mitred, so the ring comes back with
+   as many corners as the building has rather than ninety, and you can still
+   take hold of it. **Numbers** puts each side’s number on the map beside the
+   side it names; click one there, or the matching chip, to take that side in
+   or out. Good for fire lanes, setbacks and laydown yards. It works on lines
+   too, which gives you a corridor of a set width — those keep rounded ends,
+   because a cap is not a corner.
+5. **Merge** — select an area, `Ctrl`+click others in the list or on the map,
+   and press Merge. They become one shape following the outside of all of them.
+   Ground under two of them at once is counted once from then on, and a gap
+   left enclosed in the middle becomes a hole rather than being filled in.
+   Areas that do not touch are left alone.
+6. The `+` button next to an area flips it to **subtract**, so you can cut a
    courtyard or an excluded section out of the site total. Lines never count
    toward the area total.
-6. **Colour** — every shape has a colour chip beside its name. Click it to pick
+7. **Colour** — every shape has a colour chip beside its name. Click it to pick
    any colour, right-click to go back to the default. Colours are saved with
    your work and written into exported `.kml` and `.geojson`, so a plan stays
    colour-coded when someone opens it in Google Earth or QGIS.
@@ -71,7 +79,9 @@ a line, which is too thin to hit accurately.
 deletion, even Clear — and `Ctrl`+`Y` puts it back. While you are drawing,
 `Ctrl`+`Z` drops the last point instead.
 
-Everything autosaves to your browser, so closing the tab does not lose work.
+In the browser, everything autosaves as you go, so closing the tab does not
+lose work. The `.exe` deliberately does not: it runs a fresh private window
+each time, and `.kml` / `.geojson` are how work is kept.
 
 ### Shortcuts
 
@@ -129,10 +139,12 @@ Turf's `area` — what most web measuring tools use — runs 0.67% high at the
 equator, 0.12% high at 40°N and 0.41% low at 64°N. On a 400,000 sq ft warehouse
 in Texas that is about 470 sq ft of error. This tool does not have it.
 
-The offset tool places every vertex at exactly the requested distance. A full
-ring measures `Pd + πd²` to within 0.02%, the residual being the polygon
-approximation of the rounded corners; a band along chosen sides mitres its
-corners instead, and is exact.
+The offset tool places every vertex at exactly the requested distance. Mitred
+corners are exact: a ring measures `Pd + d²·Σtan(θ/2)` over the exterior angles,
+which is `Pd + 4d²` for anything rectangular. The rounded buffer still used for
+line corridors measures `Pd + πd²` to within 0.02%, the residual being the
+polygon approximation of the arcs. Merging is a true union — overlapping ground
+is counted once — and is exact on shapes whose corners meet.
 
 The math is not the limiting factor. These are:
 

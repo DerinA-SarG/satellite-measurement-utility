@@ -375,6 +375,34 @@ function mitredCorners(ring, d, moved) {
   return corners;
 }
 
+/* The same outward offset as offsetGeometry, but with every corner mitred
+ * instead of rounded: the sides stay straight and meet at a point.
+ *
+ * The rounded buffer is the more faithful answer -- it is the set of points
+ * within d of the shape -- but it spends about ninety vertices on the corners
+ * of a warehouse, and a shape with ninety corners cannot be nudged by hand.
+ * A mitre gives back a ring with as many corners as the building has, which is
+ * also what a setback actually looks like on the ground: the walls stay
+ * straight and meet at a point.
+ *
+ * A notch narrower than twice the offset folds its corners back inside the
+ * shape. Those are dropped by the same test offsetGeometry uses -- a corner
+ * that ended up closer to the original than the offset distance was never on
+ * the offset in the first place.
+ */
+function offsetMitred(pts, d) {
+  const r = sideRing(pts, d, new Set(pts.map((_, i) => i)));
+  if (!r) return null;
+  const { f, ring, corners } = r;
+  const segs = ring.map((p, i) => [p, ring[(i + 1) % ring.length]]);
+  const tol = d * 1e-3;
+
+  const all = [];
+  for (const corner of corners) for (const q of corner) all.push(q);
+  const keep = all.filter(q => distToPath(q, segs) >= d - tol);
+  return closeRing(keep.length >= 3 ? keep : all, tol, f);
+}
+
 /* Just the ground the offset adds along the chosen sides, as a shape of its
  * own: the moved edges on the outside, the original edges on the inside. The
  * building it was measured from is left alone, so nothing is counted twice.
@@ -439,6 +467,246 @@ function sideLengths(pts) {
     out.push(Math.hypot(b[0] - a[0], b[1] - a[1]));
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * 1c. Union
+ *
+ * Merging measured shapes into one is a polygon union. This does it the
+ * direct way rather than with a clipping library, because the app carries no
+ * dependencies and the shapes here are small:
+ *
+ *   1. cut every edge at every crossing with every other edge, so that no two
+ *      edges meet anywhere but at a shared end;
+ *   2. throw away the pieces that are not on the outside of the union -- a
+ *      piece with the union on both sides of it, or on neither, is not part
+ *      of its boundary. Which side is which is decided by sampling a point
+ *      just off each side, so a shared edge drops out whichever direction the
+ *      two shapes were drawn in;
+ *   3. point what is left so the union is always on its left, and walk the
+ *      loops out of it.
+ *
+ * The loops that come back anticlockwise are outlines and the clockwise ones
+ * are holes, which is exactly the shape model everything else here uses.
+ *
+ * All of it happens in one local metre frame shared by every input, so it is
+ * plain planar geometry and the result measures with the same shoelace as
+ * everything else.
+ * ------------------------------------------------------------------ */
+const UNION_TOL = 1e-6;      // metres; two corners this close are one corner
+
+/** Ray casting. Orientation does not matter. */
+function pointInRing(p, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a[1] > p[1]) !== (b[1] > p[1]) &&
+        p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+}
+
+/** Inside the outline and outside every hole. */
+function pointInPoly(p, poly) {
+  if (!pointInRing(p, poly.outer)) return false;
+  for (const h of poly.holes) if (pointInRing(p, h)) return false;
+  return true;
+}
+
+/* Where segment s has to be cut so that it meets t only at an end. Proper
+   crossings give one parameter on each; two collinear segments that overlap
+   give each other's ends. */
+function addCuts(s, t, cs, ct) {
+  const rx = s[1][0] - s[0][0], ry = s[1][1] - s[0][1];
+  const ux = t[1][0] - t[0][0], uy = t[1][1] - t[0][1];
+  const ls = Math.hypot(rx, ry), lt = Math.hypot(ux, uy);
+  if (ls < UNION_TOL || lt < UNION_TOL) return;
+  const wx = t[0][0] - s[0][0], wy = t[0][1] - s[0][1];
+  const den = rx * uy - ry * ux;
+
+  if (Math.abs(den) > 1e-12 * ls * lt) {
+    const a = (wx * uy - wy * ux) / den;
+    const b = (wx * ry - wy * rx) / den;
+    if (a > -UNION_TOL / ls && a < 1 + UNION_TOL / ls &&
+        b > -UNION_TOL / lt && b < 1 + UNION_TOL / lt) {
+      cs.push(Math.min(1, Math.max(0, a)));
+      ct.push(Math.min(1, Math.max(0, b)));
+    }
+    return;
+  }
+  if (Math.abs(wx * ry - wy * rx) / ls > UNION_TOL) return;   // parallel, not collinear
+  for (const q of t) {
+    const a = ((q[0] - s[0][0]) * rx + (q[1] - s[0][1]) * ry) / (ls * ls);
+    if (a > 0 && a < 1) cs.push(a);
+  }
+  for (const q of s) {
+    const b = ((q[0] - t[0][0]) * ux + (q[1] - t[0][1]) * uy) / (lt * lt);
+    if (b > 0 && b < 1) ct.push(b);
+  }
+}
+
+/* Corners within UNION_TOL of one another are the same corner. Snapping to the
+   nearest existing one rather than to a grid keeps two points that straddle a
+   grid line from being pulled apart. */
+function nodeIndex(tol) {
+  const cell = tol * 4;
+  const buckets = new Map();
+  const pts = [];
+  return {
+    pts,
+    id(p) {
+      const cx = Math.floor(p[0] / cell), cy = Math.floor(p[1] / cell);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const b = buckets.get((cx + dx) + ':' + (cy + dy));
+          if (!b) continue;
+          for (const i of b) {
+            if (Math.hypot(pts[i][0] - p[0], pts[i][1] - p[1]) <= tol) return i;
+          }
+        }
+      }
+      const i = pts.length;
+      pts.push(p);
+      const k = cx + ':' + cy;
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k).push(i);
+      return i;
+    }
+  };
+}
+
+/* Merges shapes into as few as they make. Takes and returns {pts, holes} in
+   lat/lng, holes optional. Returns null if there is nothing usable in them. */
+function unionShapes(shapes) {
+  const rings = [];
+  for (const sh of shapes) {
+    if (!sh.pts || sh.pts.length < 3) continue;
+    rings.push(sh.pts, ...(sh.holes || []).filter(h => h && h.length >= 3));
+  }
+  if (!rings.length) return null;
+  const c = centreOf(rings.flat());
+  const f = frameAt(c[0], c[1]);
+  const toXY = (r) => r.map(q => f.toXY(q[0], q[1]));
+
+  const polys = shapes
+    .filter(sh => sh.pts && sh.pts.length >= 3)
+    .map(sh => ({ outer: toXY(sh.pts),
+                  holes: (sh.holes || []).filter(h => h && h.length >= 3).map(toXY) }));
+  const inUnion = (q) => polys.some(poly => pointInPoly(q, poly));
+
+  const segs = [];
+  for (const poly of polys) {
+    for (const ring of [poly.outer, ...poly.holes]) {
+      for (let i = 0; i < ring.length; i++) segs.push([ring[i], ring[(i + 1) % ring.length]]);
+    }
+  }
+
+  const cuts = segs.map(() => [0, 1]);
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) addCuts(segs[i], segs[j], cuts[i], cuts[j]);
+  }
+
+  const idx = nodeIndex(UNION_TOL);
+  const seen = new Set();
+  const pieces = [];
+  for (let i = 0; i < segs.length; i++) {
+    const [p, q] = segs[i];
+    const ts = cuts[i].filter(v => v >= 0 && v <= 1).sort((a, b) => a - b);
+    const at = (t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+    for (let k = 0; k + 1 < ts.length; k++) {
+      const a = idx.id(at(ts[k])), b = idx.id(at(ts[k + 1]));
+      if (a === b) continue;
+      // two shapes sharing a wall contribute the same piece twice; one is enough
+      const key = Math.min(a, b) + ':' + Math.max(a, b);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pieces.push([a, b]);
+    }
+  }
+
+  const edges = [];
+  for (const [a, b] of pieces) {
+    const p = idx.pts[a], q = idx.pts[b];
+    const dx = q[0] - p[0], dy = q[1] - p[1];
+    const len = Math.hypot(dx, dy);
+    if (len < UNION_TOL) continue;
+    const e = Math.min(len / 4, 0.01);
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+    const nx = -dy / len * e, ny = dx / len * e;          // left of a -> b
+    const left = inUnion([mx + nx, my + ny]);
+    const right = inUnion([mx - nx, my - ny]);
+    if (left === right) continue;                          // inside or outside on both sides
+    edges.push(left ? { a, b, dx, dy } : { a: b, b: a, dx: -dx, dy: -dy });
+  }
+  if (!edges.length) return null;
+
+  const outAt = new Map();
+  edges.forEach((e, i) => {
+    if (!outAt.has(e.a)) outAt.set(e.a, []);
+    outAt.get(e.a).push(i);
+  });
+
+  /* Where two boundaries meet at a single corner there is a choice of exits.
+     Taking the first one clockwise of the way we came keeps the traversal
+     hugging the same side of the boundary all the way round. */
+  const nextFrom = (i, used) => {
+    const back = Math.atan2(-edges[i].dy, -edges[i].dx);
+    let best = -1, bestAng = Infinity;
+    for (const k of outAt.get(edges[i].b) || []) {
+      if (used[k]) continue;
+      let ang = back - Math.atan2(edges[k].dy, edges[k].dx);
+      while (ang <= 1e-12) ang += 2 * Math.PI;
+      while (ang > 2 * Math.PI) ang -= 2 * Math.PI;
+      if (ang < bestAng) { bestAng = ang; best = k; }
+    }
+    return best;
+  };
+
+  const used = new Array(edges.length).fill(false);
+  const loops = [];
+  for (let start = 0; start < edges.length; start++) {
+    if (used[start]) continue;
+    const loop = [];
+    for (let e = start; e >= 0 && !used[e]; e = nextFrom(e, used)) {
+      used[e] = true;
+      loop.push(idx.pts[edges[e].a]);
+    }
+    if (loop.length >= 3) loops.push({ ring: loop, twice: ringStats(loop).twice });
+  }
+
+  const outers = loops.filter(l => l.twice > 1e-9).map(l => ({ ring: l.ring, area: l.twice / 2, holes: [] }));
+  const holes = loops.filter(l => l.twice < -1e-9);
+  if (!outers.length) return null;
+  for (const h of holes) {
+    // an edge midpoint, not a corner: a corner may be shared with the outline
+    const m = [(h.ring[0][0] + h.ring[1][0]) / 2, (h.ring[0][1] + h.ring[1][1]) / 2];
+    let host = null;
+    for (const o of outers) {
+      if (pointInRing(m, o.ring) && (!host || o.area < host.area)) host = o;
+    }
+    if (host) host.holes.push(h.ring);
+  }
+
+  const back = (r) => dropCollinear(r).map(q => f.toLL(q[0], q[1]));
+  return outers
+    .sort((a, b) => b.area - a.area)
+    .map(o => ({ pts: back(o.ring), holes: o.holes.length ? o.holes.map(back) : null }));
+}
+
+/* Two shapes that shared a wall leave the ends of that wall behind as corners
+   sitting in the middle of a straight side. They measure the same either way,
+   but the whole reason for merging is to end up with a shape you can still
+   take hold of, so they go. */
+function dropCollinear(ring) {
+  const out = [];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[(i - 1 + ring.length) % ring.length], b = ring[i], c = ring[(i + 1) % ring.length];
+    const ux = b[0] - a[0], uy = b[1] - a[1], vx = c[0] - b[0], vy = c[1] - b[1];
+    const len = Math.hypot(vx, vy);
+    if (len > UNION_TOL && Math.abs(ux * vy - uy * vx) / len <= UNION_TOL) continue;
+    out.push(b);
+  }
+  return out.length >= 3 ? out : ring;
 }
 
 /* ------------------------------------------------------------------ *
@@ -615,7 +883,12 @@ function addShape(pts, opts = {}) {
   sh.layer = kind === 'line' ? L.polyline(pts, styleFor(sh))
                              : L.polygon(latLngsOf(sh), styleFor(sh));
   if (!sh.hidden) sh.layer.addTo(map);
-  sh.layer.on('click', (e) => { L.DomEvent.stop(e); if (!tool) select(sh.id); });
+  sh.layer.on('click', (e) => {
+    L.DomEvent.stop(e);
+    if (tool) return;
+    const oe = e.originalEvent;
+    if (oe && (oe.ctrlKey || oe.metaKey)) toggleMulti(sh.id); else select(sh.id);
+  });
   sh.layer.on('mousedown', (e) => startMove(sh, e));
   state.shapes.push(sh);
   refreshShape(sh);
@@ -648,7 +921,7 @@ function translateShape(sh, dLat, dLng) {
 
 function styleFor(sh) {
   const c = colorOf(sh);
-  const on = state.selected === sh.id;
+  const on = state.selected === sh.id || multi.has(sh.id);
   return {
     color: c,
     weight: sh.kind === 'line' ? (on ? 5 : 4) : (on ? 3 : 2),
@@ -688,6 +961,7 @@ function removeShape(id) {
   map.removeLayer(sh.layer);
   if (sh.label) map.removeLayer(sh.label);
   state.shapes.splice(i, 1);
+  multi.delete(id);
   if (state.selected === id) select(null);
   else { renderAll(); save(); }
 }
@@ -695,6 +969,7 @@ function removeShape(id) {
 function select(id) {
   state.selected = id;
   offsetNote = '';
+  multi.clear();
   clearHandles();
   state.shapes.forEach(s => s.layer.setStyle(styleFor(s)));
   const sh = state.shapes.find(s => s.id === id);
@@ -725,6 +1000,21 @@ function setAllHidden(hidden) {
 }
 
 const selectedShape = () => state.shapes.find(s => s.id === state.selected) || null;
+
+/* Merging needs more than one shape, but everything else here -- the handles,
+   the offset box, the side chips -- is about exactly one. So there is still a
+   selection proper, and Ctrl+click adds others alongside it. */
+const multi = new Set();
+const pickedShapes = () =>
+  state.shapes.filter(s => s.id === state.selected || multi.has(s.id));
+
+function toggleMulti(id) {
+  if (state.selected === null || state.selected === undefined) { select(id); return; }
+  if (id === state.selected) return;          // the selection proper cannot be dropped
+  if (multi.has(id)) multi.delete(id); else multi.add(id);
+  state.shapes.forEach(s => s.layer.setStyle(styleFor(s)));
+  renderAll();
+}
 
 /* ------------------------------------------------------------------ *
  * 6. Vertex handles and dragging a whole shape
@@ -853,8 +1143,12 @@ function setTool(t) {
 function drawHint() {
   const h = $('drawHint');
   if (!tool) {
-    h.textContent = state.shapes.length
-      ? 'Click a shape to select it. Drag inside it to move it.' : '';
+    const picked = pickedShapes().filter(s => s.kind === 'area').length;
+    h.textContent = !state.shapes.length
+      ? ''
+      : picked >= 2 ? `${picked} areas picked — Merge joins them into one shape.`
+      : picked === 1 ? 'Ctrl+click another area to pick it too, then Merge.'
+      : 'Click a shape to select it. Drag inside it to move it.';
     return;
   }
   const min = tool === 'line' ? 2 : 3;
@@ -982,7 +1276,12 @@ function doOffset() {
   // with nothing to cut out -- see offsetStrip.
   const partial = sides && sides.size < sh.pts.length;
   const bands = partial ? offsetStrip(sh.pts, metres, sides) : null;
-  const outer = partial ? null : offsetGeometry(sh.pts, sh.kind, metres);
+  // An area gets mitred corners, so the ring stays editable. A line keeps the
+  // rounded buffer: a corridor's ends are caps, and there is no corner there
+  // for two straight sides to meet at.
+  const outer = partial ? null
+    : sh.kind === 'area' ? offsetMitred(sh.pts, metres)
+                         : offsetGeometry(sh.pts, sh.kind, metres);
   if (!bands && !outer) {
     $('offsetMsg').textContent = 'That distance collapses the shape — try a smaller one.';
     return;
@@ -1023,7 +1322,54 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function renderAll() { renderList(); renderTotals(); drawHint(); renderOffsetBox(); }
+function renderAll() { renderList(); renderTotals(); drawHint(); renderOffsetBox(); renderMerge(); }
+
+function renderMerge() {
+  const areas = pickedShapes().filter(s => s.kind === 'area');
+  const b = $('mergeBtn');
+  b.hidden = areas.length < 2;
+  b.textContent = `Merge ${areas.length}`;
+  b.title = `Join ${areas.length} areas into one shape`;
+}
+
+/* Joins the picked areas into as few shapes as they actually make. Ground
+   under two of them at once is counted once afterwards, which is the whole
+   point -- it is why this is a union and not just a shape with more corners. */
+function doMerge() {
+  const picked = pickedShapes();
+  const areas = picked.filter(s => s.kind === 'area');
+  const lines = picked.length - areas.length;
+  if (areas.length < 2) return;
+
+  const merged = unionShapes(areas.map(s => ({ pts: s.pts, holes: s.holes })));
+  if (!merged) { ioMsg('Could not merge those. Check none of them crosses itself.'); return; }
+  const before = areas.reduce((a, s) => a + measureShape(s).area, 0);
+  const after = merged.reduce((a, r) => a + measureArea(r.pts, r.holes).area, 0);
+  const overlap = before - after;
+  // Shapes that only meet along an edge -- a ring and the building it was
+  // measured around -- overlap by nothing at all, and joining them is still
+  // worth doing. What says nothing happened is coming back with as many
+  // shapes as went in and the same ground covered.
+  if (merged.length >= areas.length && overlap < before * 1e-9) {
+    ioMsg('Those areas do not touch, so joining them would not change anything.');
+    return;
+  }
+
+  pushUndo();
+  const first = areas[0];
+  const base = `${first.name} + ${areas.length - 1} more`;
+  const color = first.color, mode = first.mode;
+  areas.forEach(s => removeShape(s.id));
+  const made = merged.map((r, i) => addShape(r.pts, {
+    kind: 'area', holes: r.holes, color, mode,
+    name: base + (merged.length > 1 ? ` · part ${i + 1}` : '')
+  }));
+  renderAll(); save();
+  select(made[0].id);
+  ioMsg(`Merged ${areas.length} areas into ${made.length} — ${fmtArea(after)}.` +
+        (overlap > before * 1e-9 ? ` ${fmtArea(overlap)} of overlap now counted once.` : '') +
+        (lines ? ` ${lines} line${lines > 1 ? 's were' : ' was'} left alone.` : ''));
+}
 
 /* Which sides of the selected polygon the offset should push out. `sides` of
    null means all of them, which is the plain buffer. */
@@ -1201,7 +1547,7 @@ function renderList() {
     const m = measureShape(sh);
     const isLine = sh.kind === 'line';
     const el = document.createElement('div');
-    el.className = 'item' + (state.selected === sh.id ? ' sel' : '') +
+    el.className = 'item' + (state.selected === sh.id || multi.has(sh.id) ? ' sel' : '') +
                    (sh.mode === 'subtract' && !isLine ? ' subtract' : '') + (isLine ? ' line' : '') +
                    (sh.hidden ? ' hid' : '');
     el.innerHTML =
@@ -1220,7 +1566,7 @@ function renderList() {
 
     el.addEventListener('click', (e) => {
       if (e.target.closest('button') || e.target.closest('input')) return;
-      select(sh.id);
+      if (e.ctrlKey || e.metaKey) toggleMulti(sh.id); else select(sh.id);
     });
     const nm = el.querySelector('.nm');
     // One undo step per visit to the field, not one per keystroke.
@@ -2051,6 +2397,7 @@ $('captureMargin').addEventListener('input', (e) => {
   const v = parseFloat(e.target.value);
   if (v >= 0) { state.captureMargin = v; save(); }
 });
+$('mergeBtn').addEventListener('click', doMerge);
 $('showAll').addEventListener('click', () => setAllHidden(false));
 $('hideAll').addEventListener('click', () => setAllHidden(true));
 $('offsetDist').addEventListener('input', (e) => {

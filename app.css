@@ -171,6 +171,7 @@ dialog button{margin-top:16px}
 .sidesBtns { display: flex; gap: 6px; }
 button.mini { padding: 2px 8px; font-size: 11px; }
 button.mini.on { background: #16324f; border-color: var(--accent); color: var(--accent2); }
+#mergeBtn[hidden] { display: none; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {
   min-width: 26px; padding: 3px 6px; font-size: 11px; line-height: 1;

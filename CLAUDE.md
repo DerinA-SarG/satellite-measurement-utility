@@ -55,13 +55,21 @@ build_exe.py    generates icon.ico, then PyInstaller --onefile --windowed
 start.bat/.sh   run it in a browser
 ```
 
-`app.js` sections: 1 geodesy · 1b offset (full buffer, per-side, strip) ·
-2 units · 3 state · 4 map/imagery · 5 shapes · 6 handles · 7 drawing ·
-8 offset UI · 9 sidebar · 10 export/import · 10b capture · 11 persistence ·
-11b undo · 12 search · 13 print · 14 wiring · 15 boot.
+`app.js` sections: 1 geodesy · 1b offset (buffer, mitred ring, per-side,
+strip) · 1c union · 2 units · 3 state · 4 map/imagery · 5 shapes · 6 handles ·
+7 drawing · 8 offset UI · 9 sidebar · 10 export/import · 10b capture ·
+11 persistence · 11b undo · 12 search · 13 print · 14 wiring · 15 boot.
 
-Section 1 is pure maths with no DOM or Leaflet dependency — keep it that way so
-it stays testable in isolation.
+Sections 1, 1b and 1c are pure maths with no DOM or Leaflet dependency — keep
+them that way so they stay testable in isolation.
+
+The offset a user gets is **mitred**, not the rounded buffer. The rounded one
+is the more faithful answer and is still there — `offsetGeometry`, used for
+line corridors and still validated against `A + Pd + πd²` — but it spends
+seventy vertices on the corners of a warehouse, and a shape with seventy
+vertices cannot be dragged into place. `offsetMitred` reuses `offsetGeometry`'s
+own filter to drop corners that fold back inside a notch narrower than twice
+the offset. Do not "fix" the ring back to arcs.
 
 ## Commands
 
@@ -118,6 +126,26 @@ minus the original to 0.00000%, with `measureArea(buf, [pts])` matching
 `Pd + πd²` inside the same 0.02%. The ring's label anchor must land in the band
 — inside the outline, outside the hole — because a ring's centroid does not.
 
+*Mitred ring* — `offsetMitred(pts, d)` is exact, so test it against the closed
+form directly: for a polygon with only right angles the offset area is
+`A + Pd + 4d²`, convex corners contributing `+d²` and reflex ones `−d²`. Build
+the test shape **centred on the frame origin**, or a 1e-4% round-trip error
+from the two different local frames swamps the result. Check an L, a wide notch,
+and a notch narrower than `2d`: the narrow one must lose corners rather than
+grow a loop. Assert zero self-intersections and that every output vertex is at
+least `d` from the source, both times.
+
+*Union* — `unionShapes([{pts, holes}, …])` on rectangles in one fixed frame is
+exact. Two overlapping give `A₁ + A₂ − overlap`; two sharing a wall give the
+sum and must come back as **four** corners, not six, because `dropCollinear`
+takes the old wall ends out; one inside another gives the outer alone; disjoint
+ones come back as two shapes. A U plus a cap across its mouth must return one
+outline **with a hole**, not a filled rectangle — that is the case that proves
+the loop tracing and hole assignment. A ring merged with the building it was
+measured around must close its hole and return the plain outer rectangle.
+Beware the disjointness test in `doMerge`: shapes meeting along an edge overlap
+by *nothing*, so zero overlap alone must not be read as "nothing happened".
+
 *Capture* — `captureBounds(marginM)` must sit exactly `marginM` from the
 outermost shape on all four sides (check in a local frame, not in degrees), and
 must ignore hidden shapes entirely. `renderCapture` reports `missing`; a
@@ -154,6 +182,10 @@ Check `read_console_messages` for errors after every change.
   that sums shapes has to skip it; anything that lists them must not.
 - Colour is `null` when the shape uses its kind/mode default; `colorOf()`
   resolves it. Never write the default into `color`.
+- The `.exe` keeps nothing between runs, and that is deliberate: pywebview
+  defaults to `private_mode`, and the loopback server takes a fresh port each
+  launch so the origin changes anyway. Export is the persistence story. Do not
+  "fix" it without being asked.
 - Anything that changes a shape has to record an undo step first. Discrete
   actions call `pushUndo()` before the change; drags and text fields call
   `beginEdit()` when they start and `commitEdit()` when they end, which throws
