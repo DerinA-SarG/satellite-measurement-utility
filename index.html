@@ -48,11 +48,15 @@
         <div class="sidesHead">
           <span>Sides <em id="sidesCount"></em></span>
           <span class="sidesBtns">
+            <button id="sidesNums" class="ghost mini" aria-pressed="false"
+                    title="Number the sides on the map">Numbers</button>
             <button id="sidesAll" class="ghost mini">All</button>
             <button id="sidesNone" class="ghost mini">None</button>
           </span>
         </div>
         <div id="sidesChips" class="chips"></div>
+        <div class="hint tiny">Numbers puts them on the map. Click one there, or a
+        chip here, to pick that side.</div>
       </div>
       <div id="offsetMsg" class="hint">Select a shape to offset it.</div>
     </div>
@@ -164,10 +168,14 @@
   <ul>
     <li><b>Area</b> &mdash; click each corner of the roof, then double-click or press Enter to close it.</li>
     <li><b>Line</b> &mdash; click along a route for a distance. Each segment is measured as well as the total.</li>
-    <li><b>Offset</b> &mdash; select a shape, set a distance, and get a new shape that distance out all the way around it. Useful for fire lanes, setbacks and laydown yards. It works on lines too, which gives you a corridor of a given width.</li>
+    <li><b>Offset</b> &mdash; select a shape, set a distance, and get a new shape covering the ground that distance outside it. It is only the added strip: the shape you offset is left alone and is not counted twice. All the way round that strip is a ring with the original left out of the middle of it; along a few sides it is a band, and sides on opposite walls come out as separate shapes. Useful for fire lanes, setbacks and laydown yards. It works on lines too, which gives you a corridor of a given width.</li>
   </ul>
   <h3>Editing</h3>
-  <p class="hint">Drag a corner handle to move it. Click a hollow midpoint handle to add a corner. Right-click a corner to remove it. Drag the blue grip at the centre of a selected shape to slide the whole thing around.</p>
+  <p class="hint">Drag a corner handle to move it. Click a hollow midpoint handle to add a corner. Right-click a corner to remove it. Drag the blue grip at the centre of a selected shape to slide the whole thing around. <kbd>Ctrl</kbd>+<kbd>Z</kbd> takes back the last change &mdash; a move, a new shape, a deletion, even Clear.</p>
+  <h3>Picking sides</h3>
+  <p class="hint">With an area selected, <b>Numbers</b> puts each side&rsquo;s number on the map,
+  at the middle of that side. Click a number, or the matching chip in the sidebar, to take that
+  side in or out of the offset. They stay up until you switch them off again.</p>
   <h3>Colour</h3>
   <p class="hint">Each shape has a colour chip beside its name in the list. Click it to pick any colour; right-click it to go back to the default. Colours are saved with your work and carried into exported .kml and .geojson files.</p>
   <h3>Shortcuts</h3>
@@ -178,6 +186,8 @@
     <tr><td><kbd>Enter</kbd></td><td>Finish the current shape</td></tr>
     <tr><td><kbd>Esc</kbd></td><td>Cancel drawing / deselect</td></tr>
     <tr><td><kbd>Del</kbd></td><td>Delete selected shape</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo &mdash; or drop the last point while drawing</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Redo</td></tr>
   </table>
   <form method="dialog"><button>Close</button></form>
 </dialog>

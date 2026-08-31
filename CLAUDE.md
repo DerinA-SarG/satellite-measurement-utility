@@ -55,10 +55,10 @@ build_exe.py    generates icon.ico, then PyInstaller --onefile --windowed
 start.bat/.sh   run it in a browser
 ```
 
-`app.js` sections: 1 geodesy · 1b offset (full buffer and per-side) · 2 units ·
-3 state · 4 map/imagery · 5 shapes · 6 handles · 7 drawing · 8 offset UI ·
-9 sidebar · 10 export/import · 10b capture · 11 persistence · 12 search ·
-13 print · 14 wiring · 15 boot.
+`app.js` sections: 1 geodesy · 1b offset (full buffer, per-side, strip) ·
+2 units · 3 state · 4 map/imagery · 5 shapes · 6 handles · 7 drawing ·
+8 offset UI · 9 sidebar · 10 export/import · 10b capture · 11 persistence ·
+11b undo · 12 search · 13 print · 14 wiring · 15 boot.
 
 Section 1 is pure maths with no DOM or Leaflet dependency — keep it that way so
 it stays testable in isolation.
@@ -105,6 +105,19 @@ there are no arcs to approximate. Check a reversed (clockwise) ring too: side
 `i` must always be the edge from `pts[i]` to `pts[i+1]` whichever way the ring
 was drawn, because that is what the numbered chips in the sidebar point at.
 
+*Strip* — `offsetStrip(pts, d, sides)` is what the tool actually creates: the
+same geometry with the original taken out of it, so the areas above lose their
+`A`. One side of a rectangle gives `wd`, two adjacent give `(w+h)d + d²`, three
+give `(2w+h)d + 2d²` — one `d²` per corner where two chosen sides meet. Expect
+0.000%. Walk **all** 2ⁿ−1 subsets on a rectangle, both windings: the bug this
+catches is a run of sides that wraps past vertex 0, which is indexed by run
+length rather than by end vertex for exactly that reason. Sides on opposite
+walls must come back as two rings, not one. All sides returns null; the ring is
+`offsetGeometry` plus the shape as a hole, and its area must equal the buffer
+minus the original to 0.00000%, with `measureArea(buf, [pts])` matching
+`Pd + πd²` inside the same 0.02%. The ring's label anchor must land in the band
+— inside the outline, outside the hole — because a ring's centroid does not.
+
 *Capture* — `captureBounds(marginM)` must sit exactly `marginM` from the
 outermost shape on all four sides (check in a local frame, not in degrees), and
 must ignore hidden shapes entirely. `renderCapture` reports `missing`; a
@@ -125,14 +138,27 @@ Check `read_console_messages` for errors after every change.
 - Plain ES2020, no framework, no build. Strict mode, `const`/`let`.
 - Two-space indent in JS/CSS/HTML, four in Python.
 - Shapes are `{id, name, kind:'area'|'line', mode:'add'|'subtract', color,
-  hidden, pts}` where `pts` is `[[lat,lng],…]`, unclosed. Closing points are
-  added only at export time.
+  hidden, pts, holes}` where `pts` is `[[lat,lng],…]`, unclosed. Closing points
+  are added only at export time.
+- `holes` is null on nearly everything. It is a list of rings cut out of `pts`
+  — how a full-ring offset holds the shape it was measured around. Rings come
+  off the area and add their edge to the perimeter, Leaflet takes them as extra
+  entries in `setLatLngs`, KML as `innerBoundaryIs`, GeoJSON as the rings after
+  the first, and the capture fills even-odd so the hole stays as ground. Read
+  a shape through `ringsOf`/`latLngsOf`/`measureShape` rather than `sh.pts`, so
+  none of that gets dropped. Vertex handles stay on the outline only; a hole is
+  geometry the offset put there, not something to drag.
 - `hidden` is a view decision: the shape leaves the map and the totals but
   stays in the list, in the save file, and in both export formats -- KML says
   it with its own `<visibility>` tag, GeoJSON with a `hidden` property. Anything
   that sums shapes has to skip it; anything that lists them must not.
 - Colour is `null` when the shape uses its kind/mode default; `colorOf()`
   resolves it. Never write the default into `color`.
+- Anything that changes a shape has to record an undo step first. Discrete
+  actions call `pushUndo()` before the change; drags and text fields call
+  `beginEdit()` when they start and `commitEdit()` when they end, which throws
+  the record away if nothing actually moved. A new action that skips this does
+  not break — it just quietly makes Ctrl+Z jump over it, which is worse.
 - Comments explain *why*, not *what*. Match the existing density — sparse, with
   a short block above anything non-obvious.
 - British spelling in UI text and comments ("colour", "centre").
@@ -152,6 +178,19 @@ Each of these cost real debugging time. They are fixed; do not undo them.
   pans it instead. That is why every selected shape gets a centre move grip.
 - **Double-click adds a duplicate vertex.** Leaflet fires `click`, `click`,
   `dblclick`. The `dblclick` handler pops the extra point.
+- **Leaflet positions divIcons with `transform`.** Anything in `.vtx` or
+  `.sideNum` that sets a transform of its own — a `scale()` to emphasise the
+  hovered side, say — throws the marker to the top-left corner of the map.
+  Emphasise with colour, `box-shadow` or size instead.
+- **Rebuilding a marker on its own hover eats the click.** `setHotSide` used to
+  call `drawSideNums`, which removes and recreates every badge; the one under
+  the pointer was destroyed between mousedown and mouseup, so the click never
+  fired and the side never toggled. Repaint the class on the existing element
+  via `getElement()` instead.
+- **The middle of a side is already occupied.** The hollow "add a corner"
+  handle sits exactly there, so a side badge dropped on the midpoint steals its
+  clicks — or loses its own. The badge is nudged 20px outward from the shape's
+  centre, in screen space, which is why `drawSideNums` runs again on `zoomend`.
 - **`%TEMP%` does not exist off-Windows.** Use `tempfile.gettempdir()`.
 - **`.sh` files need LF.** `.gitattributes` enforces it; without it they die on
   Linux with `bad interpreter`.

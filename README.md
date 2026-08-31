@@ -45,9 +45,15 @@ SmartScreen will warn anyone who downloads it — "More info → Run anyway".
 3. **Line** — click along a route for a distance. Every segment is measured as
    well as the total.
 4. **Offset** — select a shape, set a distance (100 ft by default) and press
-   Create. You get a new shape that distance out all the way around, with the
-   ring area reported separately. Good for fire lanes, setbacks and laydown
-   yards. It works on lines too, which gives you a corridor of a set width.
+   Create. You get a new shape covering the ground that distance outside it,
+   and only that ground: the shape you offset is left exactly where it is, so
+   nothing is counted twice. All the way round, the new shape is a ring with
+   the original left out of the middle of it. Along a few sides it is a band,
+   and sides on opposite walls come out as separate shapes, because that is
+   what they are on the ground. **Numbers** puts each side’s number on the map
+   beside the side it names; click one there, or the matching chip, to take
+   that side in or out. Good for fire lanes, setbacks and laydown yards. It
+   works on lines too, which gives you a corridor of a set width.
 5. The `+` button next to an area flips it to **subtract**, so you can cut a
    courtyard or an excluded section out of the site total. Lines never count
    toward the area total.
@@ -61,6 +67,10 @@ add a corner, right-click a corner to delete it. Drag the blue grip at the
 centre to slide the whole shape around — that is also the reliable way to grab
 a line, which is too thin to hit accurately.
 
+`Ctrl`+`Z` takes back the last change — a moved corner, a new shape, a
+deletion, even Clear — and `Ctrl`+`Y` puts it back. While you are drawing,
+`Ctrl`+`Z` drops the last point instead.
+
 Everything autosaves to your browser, so closing the tab does not lose work.
 
 ### Shortcuts
@@ -72,6 +82,8 @@ Everything autosaves to your browser, so closing the tab does not lose work.
 | `Enter` | Finish the current shape |
 | `Esc` | Cancel drawing, or deselect |
 | `Del` | Delete the selected shape |
+| `Ctrl`+`Z` | Undo — or drop the last point while drawing |
+| `Ctrl`+`Y` | Redo (`Ctrl`+`Shift`+`Z` works too) |
 
 ## Files
 
@@ -117,9 +129,10 @@ Turf's `area` — what most web measuring tools use — runs 0.67% high at the
 equator, 0.12% high at 40°N and 0.41% low at 64°N. On a 400,000 sq ft warehouse
 in Texas that is about 470 sq ft of error. This tool does not have it.
 
-The offset tool places every vertex at exactly the requested distance; its area
-matches `A + Pd + πd²` to within 0.02%, the residual being the polygon
-approximation of the rounded corners.
+The offset tool places every vertex at exactly the requested distance. A full
+ring measures `Pd + πd²` to within 0.02%, the residual being the polygon
+approximation of the rounded corners; a band along chosen sides mitres its
+corners instead, and is exact.
 
 The math is not the limiting factor. These are:
 

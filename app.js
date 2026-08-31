@@ -91,13 +91,9 @@ function minRect(xy) {
   return best;
 }
 
-/** Area shape: area (m^2), perimeter (m), bounding dimensions, label anchor. */
-function measureArea(pts) {
-  const n = pts.length;
-  if (n < 2) return { area: 0, perim: 0, dims: null, anchor: pts[0] || [0, 0] };
-  const c = centreOf(pts);
-  const f = frameAt(c[0], c[1]);
-  const xy = pts.map(p => f.toXY(p[0], p[1]));
+/** Shoelace sums for one closed ring, in a frame already chosen. */
+function ringStats(xy) {
+  const n = xy.length;
   let twice = 0, perim = 0, cx = 0, cy = 0;
   for (let i = 0; i < n; i++) {
     const a = xy[i], b = xy[(i + 1) % n];
@@ -107,8 +103,60 @@ function measureArea(pts) {
     cy += (a[1] + b[1]) * cr;
     perim += Math.hypot(b[0] - a[0], b[1] - a[1]);
   }
-  const area = Math.abs(twice) / 2;
-  const anchor = Math.abs(twice) > 1e-9 ? f.toLL(cx / (3 * twice), cy / (3 * twice)) : c;
+  return { twice, perim, cx, cy };
+}
+
+/* A ring's centroid falls in its own hole, which would put the label on top of
+ * whatever the ring was measured around. This puts it in the band instead: the
+ * middle of the longest outer edge, stepped inward half way to the hole. */
+function bandAnchor(outer, holes) {
+  const segs = [];
+  for (const h of holes) for (let i = 0; i < h.length; i++) segs.push([h[i], h[(i + 1) % h.length]]);
+  if (!segs.length) return null;
+  let best = 0, bestLen = -1;
+  for (let i = 0; i < outer.length; i++) {
+    const a = outer[i], b = outer[(i + 1) % outer.length];
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (L > bestLen) { bestLen = L; best = i; }
+  }
+  if (bestLen < 1e-9) return null;
+  const a = outer[best], b = outer[(best + 1) % outer.length];
+  const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const gap = distToPath(m, segs);
+  if (!(gap > 0)) return m;
+  // whichever normal walks towards the hole is the one pointing into the band
+  let nx = -(b[1] - a[1]) / bestLen, ny = (b[0] - a[0]) / bestLen;
+  if (distToPath([m[0] - nx * gap, m[1] - ny * gap], segs) <
+      distToPath([m[0] + nx * gap, m[1] + ny * gap], segs)) { nx = -nx; ny = -ny; }
+  return [m[0] + nx * gap / 2, m[1] + ny * gap / 2];
+}
+
+/** Area shape: area (m^2), perimeter (m), bounding dimensions, label anchor.
+    `holes` are rings cut out of it -- the ground an offset strip does not
+    cover. They come off the area and add their own edge to the perimeter. */
+function measureArea(pts, holes) {
+  const n = pts.length;
+  if (n < 2) return { area: 0, perim: 0, dims: null, anchor: pts[0] || [0, 0] };
+  const c = centreOf(pts);
+  const f = frameAt(c[0], c[1]);
+  const xy = pts.map(p => f.toXY(p[0], p[1]));
+  const s = ringStats(xy);
+  let area = Math.abs(s.twice) / 2, perim = s.perim;
+
+  const holeXY = (holes || []).filter(h => h && h.length >= 3)
+                              .map(h => h.map(p => f.toXY(p[0], p[1])));
+  for (const h of holeXY) {
+    const hs = ringStats(h);
+    area -= Math.abs(hs.twice) / 2;
+    perim += hs.perim;
+  }
+  if (area < 0) area = 0;
+
+  let anchor = Math.abs(s.twice) > 1e-9 ? f.toLL(s.cx / (3 * s.twice), s.cy / (3 * s.twice)) : c;
+  if (holeXY.length) {
+    const a = bandAnchor(xy, holeXY);
+    if (a) anchor = f.toLL(a[0], a[1]);
+  }
   return { area, perim, dims: n >= 3 ? minRect(xy) : null, anchor };
 }
 
@@ -140,7 +188,8 @@ function measureLine(pts) {
   return { len, segs, anchor };
 }
 
-const measureOf = (pts, kind) => kind === 'line' ? measureLine(pts) : measureArea(pts);
+const measureOf = (pts, kind, holes) =>
+  kind === 'line' ? measureLine(pts) : measureArea(pts, holes);
 
 /* ------------------------------------------------------------------ *
  * 1b. Outward offset (buffer)
@@ -220,19 +269,23 @@ function offsetGeometry(pts, kind, d) {
   }
 
   const tol = d * 1e-3;
-  const keep = cand.filter(p => distToPath(p, segs) >= d - tol);
+  return closeRing(cand.filter(p => distToPath(p, segs) >= d - tol), tol, f);
+}
 
-  const outXY = [];
-  for (const p of keep) {
-    const last = outXY[outXY.length - 1];
-    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > tol) outXY.push(p);
+/* Drops the repeats an offset leaves behind and hands the ring back as
+   lat/lngs, unclosed, the way every shape in this app is held. */
+function closeRing(xy, tol, f) {
+  const clean = [];
+  for (const q of xy) {
+    const last = clean[clean.length - 1];
+    if (!last || Math.hypot(q[0] - last[0], q[1] - last[1]) > tol) clean.push(q);
   }
-  if (outXY.length > 2) {
-    const a = outXY[0], b = outXY[outXY.length - 1];
-    if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol) outXY.pop();
+  if (clean.length > 2) {
+    const a = clean[0], b = clean[clean.length - 1];
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol) clean.pop();
   }
-  if (outXY.length < 3) return null;
-  return outXY.map(p => f.toLL(p[0], p[1]));
+  if (clean.length < 3) return null;
+  return clean.map(q => f.toLL(q[0], q[1]));
 }
 
 /* Offsets only the sides named in `sides`, which are edge indices into the
@@ -249,8 +302,20 @@ function offsetGeometry(pts, kind, d) {
  * offset it is cut off square instead.
  */
 function offsetSides(pts, d, sides) {
-  if (!(d > 0) || pts.length < 3 || !sides || !sides.size) return null;
+  const r = sideRing(pts, d, sides);
+  if (!r) return null;
+  const out = [];
+  for (const corner of r.corners) for (const q of corner) out.push(q);
+  return closeRing(out, Math.max(d * 1e-6, 1e-9), r.f);
+}
 
+/* The shape re-expressed counter-clockwise, so the right of travel is always
+   the outside, together with the mitred corners for this set of sides. On a
+   reversed ring, ring edge i is the original edge n-2-i -- side i has to keep
+   pointing at the edge from pts[i] to pts[i+1] whichever way the ring was
+   drawn, because that is what the numbered chips in the sidebar name. */
+function sideRing(pts, d, sides) {
+  if (!(d > 0) || pts.length < 3 || !sides || !sides.size) return null;
   const c = centreOf(pts);
   const f = frameAt(c[0], c[1]);
   const xy = pts.map(p => f.toXY(p[0], p[1]));
@@ -261,12 +326,25 @@ function offsetSides(pts, d, sides) {
     const a = xy[i], b = xy[(i + 1) % n];
     s += a[0] * b[1] - b[0] * a[1];
   }
-  // Work counter-clockwise so the right of travel is always the outside; on a
-  // reversed ring, ring edge i is the original edge n-2-i.
   const ccw = s >= 0;
   const ring = ccw ? xy : xy.slice().reverse();
   const srcOf = (i) => ccw ? i : (n - 2 - i + n) % n;
+  const moved = (i) => sides.has(srcOf(i));
 
+  const corners = mitredCorners(ring, d, moved);
+  return corners && { f, ring, n, moved, corners };
+}
+
+/* Where each ring vertex ends up once the moved edges have moved: the crossing
+   of the two edge lines either side of it, one or both of them displaced. A
+   corner between two edges that both stayed put does not move at all. A very
+   acute corner throws the mitre a long way out, so past four times the offset
+   it is cut off square, which is the one case where a vertex gives two points
+   instead of one.
+   Kept per vertex so a caller can walk the offset alongside the original,
+   which is what offsetStrip does. */
+function mitredCorners(ring, d, moved) {
+  const n = ring.length;
   const lines = [];
   for (let i = 0; i < n; i++) {
     const a = ring[i], b = ring[(i + 1) % n];
@@ -274,7 +352,7 @@ function offsetSides(pts, d, sides) {
     const L = Math.hypot(dx, dy);
     if (L < 1e-9) return null;
     const nx = dy / L, ny = -dx / L;
-    const push = sides.has(srcOf(i)) ? d : 0;
+    const push = moved(i) ? d : 0;
     lines.push({
       v: [dx / L, dy / L],
       a: [a[0] + nx * push, a[1] + ny * push],
@@ -282,33 +360,71 @@ function offsetSides(pts, d, sides) {
     });
   }
 
-  const out = [];
+  const corners = [];
   for (let i = 0; i < n; i++) {
     const prev = lines[(i - 1 + n) % n], cur = lines[i];
     const cross = prev.v[0] * cur.v[1] - prev.v[1] * cur.v[0];
-    if (Math.abs(cross) < 1e-9) { out.push(cur.a); continue; }   // straight through
+    if (Math.abs(cross) < 1e-9) { corners.push([cur.a]); continue; }   // straight through
     const wx = cur.a[0] - prev.a[0], wy = cur.a[1] - prev.a[1];
     const t = (wx * cur.v[1] - wy * cur.v[0]) / cross;
     const hit = [prev.a[0] + prev.v[0] * t, prev.a[1] + prev.v[1] * t];
-    if (Math.hypot(hit[0] - ring[i][0], hit[1] - ring[i][1]) > d * 4) {
-      out.push(prev.b, cur.a);                                    // bevel
-    } else {
-      out.push(hit);
-    }
+    corners.push(Math.hypot(hit[0] - ring[i][0], hit[1] - ring[i][1]) > d * 4
+      ? [prev.b, cur.a]                                                // bevel
+      : [hit]);
+  }
+  return corners;
+}
+
+/* Just the ground the offset adds along the chosen sides, as a shape of its
+ * own: the moved edges on the outside, the original edges on the inside. The
+ * building it was measured from is left alone, so nothing is counted twice.
+ *
+ * Sides that touch make one band -- pushing two adjacent walls out gives a
+ * single L. Sides on opposite walls make two, because that is what they are on
+ * the ground, so this hands back a list of rings rather than one.
+ *
+ * A run of moved edges i0..i1 spans vertices i0..i1+1. Walking those vertices
+ * forward along the original and then back across their mitred positions
+ * closes the band exactly, with no polygon clipping involved: each end of the
+ * run is the corner where a moved edge meets one that stayed where it was.
+ */
+function offsetStrip(pts, d, sides) {
+  const r = sideRing(pts, d, sides);
+  if (!r) return null;
+  const { f, ring, n, moved, corners } = r;
+
+  // Start at the first moved edge whose predecessor stayed put, so that no run
+  // wraps past the join. With every edge moved there is no such edge and the
+  // band is a closed ring -- that is offsetGeometry's job, not this one.
+  let start = -1;
+  for (let i = 0; i < n; i++) if (moved(i) && !moved((i - 1 + n) % n)) { start = i; break; }
+  if (start < 0) return null;
+
+  const runs = [];
+  let run = null;
+  for (let k = 0; k < n; k++) {
+    const i = (start + k) % n;
+    if (!moved(i)) { run = null; continue; }
+    if (!run) { run = []; runs.push(run); }
+    run.push(i);
   }
 
   const tol = Math.max(d * 1e-6, 1e-9);
-  const clean = [];
-  for (const q of out) {
-    const last = clean[clean.length - 1];
-    if (!last || Math.hypot(q[0] - last[0], q[1] - last[1]) > tol) clean.push(q);
+  const out = [];
+  for (const edges of runs) {
+    // Counted forward from the run's first vertex, so that a run which wraps
+    // past vertex 0 still walks in one direction.
+    const i0 = edges[0], end = i0 + edges.length;
+    const band = [];
+    for (let v = i0; v <= end; v++) band.push(ring[v % n]);              // inside, forward
+    for (let v = end; v >= i0; v--) {                                    // outside, back
+      const corner = corners[v % n];
+      for (let k = corner.length - 1; k >= 0; k--) band.push(corner[k]);
+    }
+    const llr = closeRing(band, tol, f);
+    if (llr) out.push(llr);
   }
-  if (clean.length > 2) {
-    const a = clean[0], b = clean[clean.length - 1];
-    if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol) clean.pop();
-  }
-  if (clean.length < 3) return null;
-  return clean.map(q => f.toLL(q[0], q[1]));
+  return out.length ? out : null;
 }
 
 /* The length of each side, in metres, in the order the sides are numbered. */
@@ -368,6 +484,7 @@ const state = {
   pitch: 0,
   rate: null,
   labels: true,
+  sideNums: false,
   offsetDist: 100,
   captureMargin: 150,
   gkey: ''
@@ -477,6 +594,8 @@ function defaultName(kind) {
 
 function addShape(pts, opts = {}) {
   const kind = opts.kind === 'line' ? 'line' : 'area';
+  const holes = kind === 'area' && opts.holes && opts.holes.length
+    ? opts.holes.filter(h => h && h.length >= 3) : null;
   const sh = {
     id: nextId++,
     name: opts.name || defaultName(kind),
@@ -487,10 +606,14 @@ function addShape(pts, opts = {}) {
     // map and out of the totals, which is the whole point of the toggle.
     hidden: !!opts.hidden,
     pts,
+    // Ground inside the outline that the shape does not cover -- what an
+    // offset strip leaves for the building it was measured around.
+    holes: holes && holes.length ? holes : null,
     layer: null,
     label: null
   };
-  sh.layer = kind === 'line' ? L.polyline(pts, styleFor(sh)) : L.polygon(pts, styleFor(sh));
+  sh.layer = kind === 'line' ? L.polyline(pts, styleFor(sh))
+                             : L.polygon(latLngsOf(sh), styleFor(sh));
   if (!sh.hidden) sh.layer.addTo(map);
   sh.layer.on('click', (e) => { L.DomEvent.stop(e); if (!tool) select(sh.id); });
   sh.layer.on('mousedown', (e) => startMove(sh, e));
@@ -502,6 +625,26 @@ function addShape(pts, opts = {}) {
 /** A shape's own colour if it has been customised, otherwise the default
     for its kind and mode. */
 const colorOf = (sh) => sh.color || (sh.kind === 'line' ? COLOR.line : COLOR[sh.mode]);
+
+/** What Leaflet wants: one ring, or the outline followed by its holes. */
+const latLngsOf = (sh) => sh.holes && sh.holes.length ? [sh.pts, ...sh.holes] : sh.pts;
+
+/** Every ring the shape is drawn from, outline first. */
+const ringsOf = (sh) => sh.kind === 'line' || !sh.holes ? [sh.pts] : [sh.pts, ...sh.holes];
+
+const measureShape = (sh) => sh.m || measureOf(sh.pts, sh.kind, sh.holes);
+
+/** The shape as it is saved and as undo remembers it -- no Leaflet, no id. */
+const plainShape = (sh) => ({ name: sh.name, kind: sh.kind, mode: sh.mode, color: sh.color,
+                              hidden: sh.hidden, pts: sh.pts, holes: sh.holes });
+
+/** Slide a whole shape, holes and all. */
+function translateShape(sh, dLat, dLng) {
+  const shift = (ring) => ring.map(q => [q[0] + dLat, q[1] + dLng]);
+  sh.pts = shift(sh.pts);
+  if (sh.holes) sh.holes = sh.holes.map(shift);
+  sh.layer.setLatLngs(latLngsOf(sh));
+}
 
 function styleFor(sh) {
   const c = colorOf(sh);
@@ -522,9 +665,9 @@ function labelFor(sh, m) {
 }
 
 function refreshShape(sh) {
-  sh.layer.setLatLngs(sh.pts);
+  sh.layer.setLatLngs(latLngsOf(sh));
   sh.layer.setStyle(styleFor(sh));
-  const m = measureOf(sh.pts, sh.kind);
+  const m = measureOf(sh.pts, sh.kind, sh.holes);
   sh.m = m;
   // Measured either way: a hidden shape still shows its own figure in the
   // list, so it can be judged before being counted again.
@@ -551,6 +694,7 @@ function removeShape(id) {
 
 function select(id) {
   state.selected = id;
+  offsetNote = '';
   clearHandles();
   state.shapes.forEach(s => s.layer.setStyle(styleFor(s)));
   const sh = state.shapes.find(s => s.id === id);
@@ -558,12 +702,15 @@ function select(id) {
   // it back -- but it has no outline on the map to hang edit handles off.
   if (sh && !sh.hidden) buildHandles(sh);
   sidePick = { id: sh && !sh.hidden && sh.kind === 'area' ? id : null, sides: null };
+  hotSide = null;
   renderAll();
   drawSideHighlight();
+  drawSideNums();
 }
 
 /** Show or hide one shape. */
 function setHidden(sh, hidden) {
+  pushUndo();
   sh.hidden = !!hidden;
   if (sh.hidden && state.selected === sh.id) select(null);
   else { refreshShape(sh); renderAll(); save(); }
@@ -571,6 +718,7 @@ function setHidden(sh, hidden) {
 
 /** Both buttons under the list. */
 function setAllHidden(hidden) {
+  pushUndo();
   state.shapes.forEach(s => { s.hidden = !!hidden; refreshShape(s); });
   if (hidden) select(null);
   else { renderAll(); save(); }
@@ -598,18 +746,17 @@ function addMoveHandle(sh) {
   }).addTo(map);
   let last = L.latLng(sh.m.anchor);
   mv.on('dragstart', (e) => {
+    beginEdit();
     last = e.target.getLatLng();
     handles.forEach(h => { if (h !== mv) map.removeLayer(h); });
     handles = [mv];
   });
   mv.on('drag', (e) => {
     const cur = e.target.getLatLng();
-    const dLat = cur.lat - last.lat, dLng = cur.lng - last.lng;
+    translateShape(sh, cur.lat - last.lat, cur.lng - last.lng);
     last = cur;
-    sh.pts = sh.pts.map(p => [p[0] + dLat, p[1] + dLng]);
-    sh.layer.setLatLngs(sh.pts);
   });
-  mv.on('dragend', () => { refreshShape(sh); renderAll(); save(); buildHandles(sh); });
+  mv.on('dragend', () => { commitEdit(); refreshShape(sh); renderAll(); save(); buildHandles(sh); });
   handles.push(mv);
 }
 
@@ -621,16 +768,21 @@ function buildHandles(sh) {
   sh.pts.forEach((p, i) => {
     const mk = L.marker(p, { icon: handleIcon(false), draggable: true, zIndexOffset: 1000,
                              pane: 'handles' }).addTo(map);
+    mk.on('dragstart', beginEdit);
     mk.on('drag', (e) => {
       const ll = e.target.getLatLng();
       sh.pts[i] = [ll.lat, ll.lng];
-      sh.layer.setLatLngs(sh.pts);
-      liveReadout(measureOf(sh.pts, sh.kind), sh.kind);
+      sh.layer.setLatLngs(latLngsOf(sh));
+      liveReadout(measureOf(sh.pts, sh.kind, sh.holes), sh.kind);
     });
-    mk.on('dragend', () => { refreshShape(sh); buildHandles(sh); renderAll(); save(); setReadout(''); });
+    mk.on('dragend', () => {
+      commitEdit();
+      refreshShape(sh); buildHandles(sh); renderAll(); save(); setReadout('');
+    });
     mk.on('contextmenu', (e) => {
       L.DomEvent.stop(e);
       if (sh.pts.length <= (closed ? 3 : 2)) return;
+      pushUndo();
       sh.pts.splice(i, 1);
       refreshShape(sh); buildHandles(sh); renderAll(); save();
     });
@@ -643,6 +795,7 @@ function buildHandles(sh) {
       title: 'Click to add a corner here' }).addTo(map);
     mm.on('click', (e) => {
       L.DomEvent.stop(e);
+      pushUndo();
       sh.pts.splice(i + 1, 0, mid);
       refreshShape(sh); buildHandles(sh); renderAll(); save();
     });
@@ -657,15 +810,14 @@ function startMove(sh, e) {
   L.DomEvent.stop(e);
   map.dragging.disable();
   clearHandles();
+  beginEdit();
   moving = { sh, last: e.latlng, moved: false };
 }
 map.on('mousemove', (e) => {
   if (!moving) return;
-  const dLat = e.latlng.lat - moving.last.lat, dLng = e.latlng.lng - moving.last.lng;
+  translateShape(moving.sh, e.latlng.lat - moving.last.lat, e.latlng.lng - moving.last.lng);
   moving.last = e.latlng;
   moving.moved = true;
-  moving.sh.pts = moving.sh.pts.map(p => [p[0] + dLat, p[1] + dLng]);
-  moving.sh.layer.setLatLngs(moving.sh.pts);
 });
 let movedAt = 0;
 function endMove() {
@@ -673,6 +825,7 @@ function endMove() {
   const sh = moving.sh, moved = moving.moved;
   moving = null;
   map.dragging.enable();
+  commitEdit();
   if (moved) { movedAt = Date.now(); refreshShape(sh); renderAll(); save(); }
   buildHandles(sh);
 }
@@ -745,6 +898,7 @@ function commitDraft(pts) {
   if (!pts || pts.length < min) return;
   const kind = tool;
   cancelDraw();
+  pushUndo();
   const sh = addShape(pts, { kind });
   renderAll(); save();
   setTool(null);
@@ -807,6 +961,9 @@ function setReadout(html, isHtml) {
 /* ------------------------------------------------------------------ *
  * 8. Offset
  * ------------------------------------------------------------------ */
+/* What the offset makes is the ground it adds and nothing else: the selected
+   shape is left exactly where it is, and the new shape covers only the strip
+   outside it. Anything else would count the same ground twice in the total. */
 function doOffset() {
   const sh = selectedShape();
   if (!sh) return;
@@ -815,31 +972,47 @@ function doOffset() {
   state.offsetDist = v;
   const metres = v / LEN_UNITS[state.lenUnit].per_m;
 
-  // A full ring keeps the rounded-corner buffer, which is the validated one.
-  // A subset mitres its corners instead -- see offsetSides.
   const sides = pickedSides(sh);
-  const partial = sides && sides.size < sh.pts.length;
   if (sides && !sides.size) {
     $('offsetMsg').textContent = 'Pick at least one side, or select them all.';
     return;
   }
-  const pts = partial
-    ? offsetSides(sh.pts, metres, sides)
-    : offsetGeometry(sh.pts, sh.kind, metres);
-  if (!pts) {
+  // All the way round, the strip is a ring: the rounded-corner buffer with the
+  // shape itself cut out of it as a hole. Along a few sides it is an open band
+  // with nothing to cut out -- see offsetStrip.
+  const partial = sides && sides.size < sh.pts.length;
+  const bands = partial ? offsetStrip(sh.pts, metres, sides) : null;
+  const outer = partial ? null : offsetGeometry(sh.pts, sh.kind, metres);
+  if (!bands && !outer) {
     $('offsetMsg').textContent = 'That distance collapses the shape — try a smaller one.';
     return;
   }
-  const label = partial
-    ? `${sh.name} +${num(v, 0)} ${LEN_UNITS[state.lenUnit].label} (${sides.size} side${sides.size === 1 ? '' : 's'})`
-    : `${sh.name} +${num(v, 0)} ${LEN_UNITS[state.lenUnit].label}`;
-  const made = addShape(pts, { name: label, kind: 'area' });
+
+  const tag = `+${num(v, 0)} ${LEN_UNITS[state.lenUnit].label}`;
+  const made = [];
+  pushUndo();
+  if (partial) {
+    const list = [...sides].sort((a, b) => a - b).map(i => i + 1);
+    const which = list.length <= 4
+      ? `side${list.length === 1 ? '' : 's'} ${list.join(', ')}` : `${list.length} sides`;
+    bands.forEach((band, i) => made.push(addShape(band, { kind: 'area',
+      name: `${sh.name} ${tag} (${which}${bands.length > 1 ? `, part ${i + 1}` : ''})` })));
+  } else {
+    // A line encloses no ground of its own, so its offset is the whole
+    // corridor and there is nothing to cut out of it.
+    made.push(addShape(outer, { kind: 'area', name: `${sh.name} ${tag}`,
+                                holes: sh.kind === 'area' ? [sh.pts.slice()] : null }));
+  }
+
   renderAll(); save();
-  select(made.id);
-  const ring = made.m.area - (sh.kind === 'area' ? sh.m.area : 0);
-  $('offsetMsg').innerHTML = sh.kind === 'area'
-    ? `Added strip is ${fmtArea(ring)}.`
-    : `Corridor ${fmtLen(metres * 2)} wide.`;
+  select(made[made.length - 1].id);
+  const added = made.reduce((a, m) => a + m.m.area, 0);
+  offsetNote = sh.kind === 'line'
+    ? `New corridor ${fmtLen(metres * 2)} wide — ${fmtArea(added)}.`
+    : `New strip is ${fmtArea(added)}` +
+      (made.length > 1 ? `, in ${made.length} pieces` : '') +
+      `. “${escapeHtml(sh.name)}” is unchanged.`;
+  renderOffsetBox();
 }
 
 /* ------------------------------------------------------------------ *
@@ -856,6 +1029,7 @@ function renderAll() { renderList(); renderTotals(); drawHint(); renderOffsetBox
    null means all of them, which is the plain buffer. */
 let sidePick = { id: null, sides: null };
 let sideLayer = null;
+let offsetNote = '';   // the result of the last offset, until the selection changes
 
 function pickedSides(sh) {
   if (!sh || sh.kind !== 'area') return null;
@@ -878,6 +1052,99 @@ function drawSideHighlight() {
   }).addTo(map);
 }
 
+/* The chip numbers, out on the map at the middle of the side they name, so it
+   is obvious which side is which before pressing Create. The Numbers button
+   turns them on and they stay until it is pressed again; clicking one picks or
+   drops that side, exactly as its chip does. */
+let sideNums = [];
+let hotSide = null;
+let hotLayer = null;
+
+function drawSideNums() {
+  sideNums.forEach(m => map.removeLayer(m));
+  sideNums = [];
+  const sh = selectedShape();
+  if (!state.sideNums || !sh || sh.kind !== 'area' || sh.hidden) return;
+  const sides = pickedSides(sh);
+  const n = sh.pts.length;
+  // The midpoint of a side is already taken -- that is where the hollow "add a
+  // corner" handle sits. The badge is nudged a fixed number of pixels clear of
+  // it, outwards from the shape's centre, so both stay clickable at any zoom.
+  const NUDGE = 20;
+  const c = map.latLngToLayerPoint(centreOf(sh.pts));
+  for (let i = 0; i < n; i++) {
+    const a = sh.pts[i], b = sh.pts[(i + 1) % n];
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const on = !sides || sides.has(i);
+    const q = map.latLngToLayerPoint(mid);
+    const len = Math.hypot(q.x - c.x, q.y - c.y) || 1;
+    const ux = (q.x - c.x) / len, uy = (q.y - c.y) / len;
+    const mk = L.marker(mid, {
+      // Leaflet draws the icon at the point minus its anchor, so shrinking the
+      // anchor along the outward direction pushes the badge that way.
+      icon: L.divIcon({ className: 'sideNum' + (on ? ' on' : '') + (hotSide === i ? ' hot' : ''),
+                        iconSize: [22, 22], html: String(i + 1),
+                        iconAnchor: [11 - ux * NUDGE, 11 - uy * NUDGE] }),
+      pane: 'handles', zIndexOffset: 1200, keyboard: false,
+      title: `Side ${i + 1} — click to ${on ? 'leave it out' : 'put it back'}`
+    }).addTo(map);
+    // stop, or the map's own click handler deselects the shape underneath
+    mk.on('click', (e) => { L.DomEvent.stop(e); toggleSide(i); });
+    mk.on('mouseover', () => setHotSide(i));
+    mk.on('mouseout', () => setHotSide(null));
+    sideNums.push(mk);
+  }
+}
+
+/* Take one side in or out of the offset. The first click on any side turns the
+   implicit "all sides" into a real set, so that dropping one leaves the rest
+   selected rather than starting from nothing. */
+function toggleSide(i) {
+  const sh = selectedShape();
+  if (!sh || sh.kind !== 'area') return;
+  const sides = sidePick.sides || new Set(sh.pts.map((_, k) => k));
+  if (sides.has(i)) sides.delete(i); else sides.add(i);
+  sidePick = { id: sh.id, sides };
+  renderSides();
+  drawSideHighlight();
+  drawSideNums();
+}
+
+function drawHotSide() {
+  if (hotLayer) { map.removeLayer(hotLayer); hotLayer = null; }
+  const sh = selectedShape();
+  if (hotSide === null || !sh || sh.kind !== 'area' || sh.hidden) return;
+  const n = sh.pts.length;
+  if (hotSide >= n) return;
+  hotLayer = L.polyline([sh.pts[hotSide], sh.pts[(hotSide + 1) % n]], {
+    color: '#fbbf24', weight: 9, opacity: 0.9, lineCap: 'round', interactive: false
+  }).addTo(map);
+}
+
+/** Which side the pointer is over, or null once it leaves.
+    This repaints the markers rather than rebuilding them: hovering a number
+    would otherwise destroy the very element the pointer is pressing on, and
+    the click that followed would land on nothing. */
+function setHotSide(i) {
+  if (hotSide === i) return;
+  hotSide = i;
+  drawHotSide();
+  sideNums.forEach((m, k) => {
+    const el = m.getElement();
+    if (el) el.classList.toggle('hot', hotSide === k);
+  });
+}
+
+/** The Numbers button. */
+function setSideNums(on) {
+  state.sideNums = !!on;
+  if (!state.sideNums) hotSide = null;
+  drawHotSide();
+  drawSideNums();
+  renderOffsetBox();
+  save();
+}
+
 function renderSides() {
   const box = $('sidesBox'), chips = $('sidesChips');
   const sh = selectedShape();
@@ -893,17 +1160,9 @@ function renderSides() {
     b.className = 'chip' + (on ? ' on' : '');
     b.textContent = String(i + 1);
     b.title = `Side ${i + 1} — ${fmtLen(len)}`;
-    b.addEventListener('click', () => {
-      // The first click on a chip turns the implicit "all sides" into a real
-      // set, so that unticking one side leaves the rest selected.
-      const sides = sidePick.sides || new Set(lens.map((_, k) => k));
-      if (sides.has(i)) sides.delete(i); else sides.add(i);
-      sidePick = { id: sh.id, sides };
-      renderSides();
-      drawSideHighlight();
-    });
-    b.addEventListener('mouseenter', () => b.classList.add('hot'));
-    b.addEventListener('mouseleave', () => b.classList.remove('hot'));
+    b.addEventListener('click', () => toggleSide(i));
+    b.addEventListener('mouseenter', () => { b.classList.add('hot'); setHotSide(i); });
+    b.addEventListener('mouseleave', () => { b.classList.remove('hot'); setHotSide(null); });
     chips.appendChild(b);
   });
 
@@ -917,16 +1176,16 @@ function renderOffsetBox() {
   const sh = selectedShape();
   renderSides();
   $('offsetBtn').disabled = !sh || sh.hidden;
+  $('sidesNums').classList.toggle('on', !!state.sideNums);
+  $('sidesNums').setAttribute('aria-pressed', String(!!state.sideNums));
   $('offsetUnit').textContent = LEN_UNITS[state.lenUnit].label;
   $('captureUnit').textContent = LEN_UNITS[state.lenUnit].label;
-  if (!sh) $('offsetMsg').textContent = 'Select a shape to offset it.';
-  else if (!$('offsetMsg').textContent.startsWith('Ring') &&
-           !$('offsetMsg').textContent.startsWith('Corridor')) {
-    const sides = pickedSides(sh);
-    $('offsetMsg').textContent = sides
-      ? `Pushes ${sides.size} side${sides.size === 1 ? '' : 's'} of “${sh.name}” outward.`
-      : `Offsets “${sh.name}” outward all the way around.`;
-  }
+  if (offsetNote) { $('offsetMsg').innerHTML = offsetNote; return; }
+  if (!sh) { $('offsetMsg').textContent = 'Select a shape to offset it.'; return; }
+  const sides = pickedSides(sh);
+  $('offsetMsg').textContent = sides
+    ? `Makes a new strip along ${sides.size} side${sides.size === 1 ? '' : 's'} of “${sh.name}”.`
+    : `Makes a new strip right around “${sh.name}”, with the shape itself left out of it.`;
 }
 
 function renderList() {
@@ -939,7 +1198,7 @@ function renderList() {
       (hiddenCount ? ` · ${hiddenCount} hidden` : '')
     : '';
   for (const sh of state.shapes) {
-    const m = sh.m || measureOf(sh.pts, sh.kind);
+    const m = measureShape(sh);
     const isLine = sh.kind === 'line';
     const el = document.createElement('div');
     el.className = 'item' + (state.selected === sh.id ? ' sel' : '') +
@@ -963,22 +1222,30 @@ function renderList() {
       if (e.target.closest('button') || e.target.closest('input')) return;
       select(sh.id);
     });
-    el.querySelector('.nm').addEventListener('input', (e) => {
+    const nm = el.querySelector('.nm');
+    // One undo step per visit to the field, not one per keystroke.
+    nm.addEventListener('focus', beginEdit);
+    nm.addEventListener('blur', commitEdit);
+    nm.addEventListener('input', (e) => {
       sh.name = e.target.value; refreshShape(sh); save();
     });
     const sw = el.querySelector('.swatch');
+    sw.addEventListener('focus', beginEdit);
+    sw.addEventListener('change', commitEdit);
     sw.addEventListener('input', (e) => { sh.color = e.target.value; refreshShape(sh); save(); });
     sw.addEventListener('contextmenu', (e) => {      // right-click restores the default
       e.preventDefault();
+      pushUndo();
       sh.color = null; refreshShape(sh); renderAll(); save();
     });
     const pm = el.querySelector('.pm');
     if (pm) pm.addEventListener('click', () => {
+      pushUndo();
       sh.mode = sh.mode === 'add' ? 'subtract' : 'add';
       refreshShape(sh); renderAll(); save();
     });
     el.querySelector('.eye').addEventListener('click', () => setHidden(sh, !sh.hidden));
-    el.querySelector('.x').addEventListener('click', () => removeShape(sh.id));
+    el.querySelector('.x').addEventListener('click', () => { pushUndo(); removeShape(sh.id); });
     box.appendChild(el);
   }
 }
@@ -987,7 +1254,7 @@ function totals() {
   let add = 0, sub = 0, perim = 0, lineLen = 0, lines = 0;
   for (const sh of state.shapes) {
     if (sh.hidden) continue;
-    const m = sh.m || measureOf(sh.pts, sh.kind);
+    const m = measureShape(sh);
     if (sh.kind === 'line') { lineLen += m.len; lines++; continue; }
     if (sh.mode === 'subtract') sub += m.area;
     else { add += m.area; perim += m.perim; }
@@ -1072,11 +1339,13 @@ function kmlColor(hex, aa) {
 function toKml() {
 
   const marks = state.shapes.map(sh => {
-    const m = sh.m || measureOf(sh.pts, sh.kind);
+    const m = measureShape(sh);
     const isLine = sh.kind === 'line';
     const col = colorOf(sh);
-    const coords = (isLine ? sh.pts : sh.pts.concat([sh.pts[0]]))
+    const coords = (r) => r.concat(isLine ? [] : [r[0]])
       .map(p => `${p[1].toFixed(9)},${p[0].toFixed(9)},0`).join(' ');
+    const inner = (sh.holes || []).map(h =>
+      `<innerBoundaryIs><LinearRing><coordinates>${coords(h)}</coordinates></LinearRing></innerBoundaryIs>`).join('\n      ');
     const desc = isLine
       ? [`Length: ${fmtLen(m.len)} (${num(m.len, 2)} m)`, `Segments: ${m.segs.length}`]
       : [`Area: ${fmtArea(m.area)} (${num(m.area, 2)} sq m)`,
@@ -1084,9 +1353,10 @@ function toKml() {
          `Perimeter: ${fmtLen(m.perim)}`,
          sh.mode === 'subtract' ? 'Excluded from the site total.' : null];
     const geom = isLine
-      ? `<LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>`
+      ? `<LineString><tessellate>1</tessellate><coordinates>${coords(sh.pts)}</coordinates></LineString>`
       : `<Polygon><altitudeMode>clampToGround</altitudeMode>
-      <outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs>
+      <outerBoundaryIs><LinearRing><coordinates>${coords(sh.pts)}</coordinates></LinearRing></outerBoundaryIs>
+      ${inner}
     </Polygon>`;
     return `  <Placemark>
     <name>${escapeHtml(sh.name)}</name>
@@ -1123,7 +1393,7 @@ function toGeoJson() {
   return JSON.stringify({
     type: 'FeatureCollection',
     features: state.shapes.map(sh => {
-      const m = sh.m || measureOf(sh.pts, sh.kind);
+      const m = measureShape(sh);
       const isLine = sh.kind === 'line';
       return {
         type: 'Feature',
@@ -1140,7 +1410,8 @@ function toGeoJson() {
         geometry: isLine
           ? { type: 'LineString', coordinates: sh.pts.map(p => [+p[1].toFixed(9), +p[0].toFixed(9)]) }
           : { type: 'Polygon',
-              coordinates: [sh.pts.concat([sh.pts[0]]).map(p => [+p[1].toFixed(9), +p[0].toFixed(9)])] }
+              coordinates: ringsOf(sh).map(r =>
+                r.concat([r[0]]).map(p => [+p[1].toFixed(9), +p[0].toFixed(9)])) }
       };
     })
   }, null, 2);
@@ -1200,7 +1471,15 @@ function importKml(text) {
     for (const poly of pm.getElementsByTagNameNS('*', 'Polygon')) {
       const ob = poly.getElementsByTagNameNS('*', 'outerBoundaryIs')[0] || poly;
       const co = ob.getElementsByTagNameNS('*', 'coordinates')[0];
-      if (co) polys.push(parseCoordString(co.textContent));
+      if (!co) continue;
+      // A ring drawn by the offset comes back as a ring, not as a solid blob
+      // with its hole quietly filled in.
+      const holes = [];
+      for (const ib of poly.getElementsByTagNameNS('*', 'innerBoundaryIs')) {
+        const ic = ib.getElementsByTagNameNS('*', 'coordinates')[0];
+        if (ic) holes.push(parseCoordString(ic.textContent));
+      }
+      polys.push({ outer: parseCoordString(co.textContent), holes });
     }
     const lines = [];
     for (const ls of pm.getElementsByTagNameNS('*', 'LineString')) {
@@ -1208,8 +1487,9 @@ function importKml(text) {
       if (co) lines.push(parseCoordString(co.textContent));
     }
     polys.forEach((r, i) => {
-      const pts = dedupeRing(r, true);
-      if (pts.length >= 3) found.push({ pts, kind: 'area', mode, color, hidden, name: polys.length > 1 ? `${base} ${i + 1}` : base });
+      const pts = dedupeRing(r.outer, true);
+      const holes = r.holes.map(h => dedupeRing(h, true)).filter(h => h.length >= 3);
+      if (pts.length >= 3) found.push({ pts, holes, kind: 'area', mode, color, hidden, name: polys.length > 1 ? `${base} ${i + 1}` : base });
     });
     lines.forEach((r, i) => {
       const pts = dedupeRing(r, false);
@@ -1243,8 +1523,10 @@ function importGeoJson(text) {
                 : geo.type === 'MultiPolygon' ? geo.coordinates : [];
     polys.forEach((poly, i) => {
       const pts = dedupeRing(poly[0].map(c => [c[1], c[0]]), true);
+      const holes = poly.slice(1)
+        .map(r => dedupeRing(r.map(c => [c[1], c[0]]), true)).filter(h => h.length >= 3);
       if (pts.length >= 3) {
-        found.push({ pts, kind: 'area', name: nm + (polys.length > 1 ? ` ${i + 1}` : ''),
+        found.push({ pts, holes, kind: 'area', name: nm + (polys.length > 1 ? ` ${i + 1}` : ''),
                      color: props.fill || props.stroke || null,
                      hidden: !!props.hidden,
                      mode: props.mode === 'subtract' ? 'subtract' : 'add' });
@@ -1256,8 +1538,9 @@ function importGeoJson(text) {
 
 function loadFound(found, label) {
   if (!found.length) { ioMsg('No shapes found in that file.'); return; }
+  pushUndo();
   found.forEach(f => addShape(f.pts, { name: f.name, mode: f.mode, kind: f.kind,
-                                      color: f.color, hidden: f.hidden }));
+                                      color: f.color, hidden: f.hidden, holes: f.holes }));
   const all = state.shapes.filter(s => !s.hidden).flatMap(s => s.pts);
   if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.15));
   renderAll(); save();
@@ -1413,7 +1696,6 @@ async function renderCapture(marginM, onProgress) {
   // Shapes, in the order they are listed, over the imagery.
   const px = (p) => [lon2px(p[1], z) - x0, lat2px(p[0], z) - y0];
   for (const sh of b.shapes) {
-    const ring = sh.pts.map(px);
     const c = colorOf(sh);
     g.save();
     g.lineJoin = 'round';
@@ -1421,12 +1703,16 @@ async function renderCapture(marginM, onProgress) {
     g.strokeStyle = c;
     if (sh.mode === 'subtract' && sh.kind !== 'line') g.setLineDash([9 * k, 6 * k]);
     g.beginPath();
-    ring.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]));
+    for (const r of ringsOf(sh)) {
+      r.map(px).forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]));
+      if (sh.kind !== 'line') g.closePath();
+    }
     if (sh.kind !== 'line') {
-      g.closePath();
       g.fillStyle = c;
       g.globalAlpha = 0.22;
-      g.fill();
+      // even-odd, so a ring's hole is left as ground rather than filled in
+      // whichever way round its two boundaries happen to run.
+      g.fill('evenodd');
       g.globalAlpha = 1;
     }
     g.stroke();
@@ -1440,7 +1726,7 @@ async function renderCapture(marginM, onProgress) {
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     for (const sh of b.shapes) {
-      const m = sh.m || measureOf(sh.pts, sh.kind);
+      const m = measureShape(sh);
       const has = sh.kind === 'line' ? m.len > 0 : m.area > 0;
       if (!has) continue;
       const lines = [sh.name, sh.kind === 'line' ? fmtLen(m.len)
@@ -1535,11 +1821,11 @@ function save() {
     try {
       const c = map.getCenter();
       localStorage.setItem(STORE_KEY, JSON.stringify({
-        shapes: state.shapes.map(s => ({ name: s.name, kind: s.kind, mode: s.mode,
-                                         color: s.color, hidden: s.hidden, pts: s.pts })),
+        shapes: state.shapes.map(plainShape),
         view: { c: [c.lat, c.lng], z: map.getZoom() },
         areaUnit: state.areaUnit, lenUnit: state.lenUnit,
         pitch: state.pitch, rate: state.rate, labels: state.labels,
+        sideNums: state.sideNums,
         offsetDist: state.offsetDist, captureMargin: state.captureMargin,
         gkey: state.gkey
       }));
@@ -1560,6 +1846,7 @@ function restore() {
   state.pitch = d.pitch || 0;
   state.rate = d.rate || null;
   state.labels = d.labels !== false;
+  state.sideNums = !!d.sideNums;
   state.offsetDist = d.offsetDist || 100;
   state.captureMargin = d.captureMargin ?? 150;
   state.gkey = d.gkey || '';
@@ -1571,10 +1858,95 @@ function restore() {
   $('offsetDist').value = state.offsetDist;
   $('captureMargin').value = state.captureMargin;
   $('gkey').value = state.gkey;
-  (d.shapes || []).forEach(s => addShape(s.pts, { name: s.name, mode: s.mode, kind: s.kind,
-                                                  color: s.color, hidden: s.hidden }));
+  (d.shapes || []).forEach(s => addShape(s.pts, s));
   if (d.view) map.setView(d.view.c, d.view.z);
   return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 11b. Undo
+ *
+ * Snapshot based. Every action that changes a shape records the whole set as
+ * it was beforehand, and undo puts that back. Shapes are small plain objects,
+ * so a copy of all of them costs nothing at this scale, and nothing can drift
+ * out of step the way a per-action inverse eventually does.
+ *
+ * Drags and text fields call beginEdit/commitEdit instead, because a drag that
+ * goes nowhere and a field that is clicked but not typed in must not fill the
+ * history with steps that undo nothing.
+ * ------------------------------------------------------------------ */
+const UNDO_MAX = 60;
+let undoStack = [];
+let redoStack = [];
+let pendingUndo = null;
+
+function snapshot() {
+  return JSON.stringify({
+    sel: state.shapes.findIndex(s => s.id === state.selected),
+    shapes: state.shapes.map(plainShape)
+  });
+}
+
+function record(json) {
+  if (undoStack[undoStack.length - 1] === json) return;
+  undoStack.push(json);
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  redoStack.length = 0;
+}
+
+/** Record the state as it is right now, before changing it. */
+function pushUndo() { record(snapshot()); }
+
+/** Remember the state before an edit that may come to nothing. */
+function beginEdit() { pendingUndo = snapshot(); }
+
+/** Keep that record, but only if the edit actually changed something. */
+function commitEdit() {
+  const before = pendingUndo;
+  pendingUndo = null;
+  if (before !== null && before !== snapshot()) record(before);
+}
+
+function applySnapshot(json) {
+  const d = JSON.parse(json);
+  state.shapes.forEach(sh => {
+    map.removeLayer(sh.layer);
+    if (sh.label) map.removeLayer(sh.label);
+  });
+  state.shapes = [];
+  state.selected = null;
+  clearHandles();
+  d.shapes.forEach(sh => addShape(sh.pts, sh));
+  // Ids are handed out fresh, so the selection is remembered by position.
+  select(d.sel >= 0 && d.sel < state.shapes.length ? state.shapes[d.sel].id : null);
+  save();
+}
+
+function undo() {
+  if (!undoStack.length) { ioMsg('Nothing to undo.'); return; }
+  redoStack.push(snapshot());
+  applySnapshot(undoStack.pop());
+  ioMsg('Undone.');
+}
+
+function redo() {
+  if (!redoStack.length) { ioMsg('Nothing to redo.'); return; }
+  undoStack.push(snapshot());
+  applySnapshot(redoStack.pop());
+  ioMsg('Redone.');
+}
+
+/** Ctrl+Z. Mid-draw the obvious thing to take back is the last point, not the
+    whole shape before it -- the shape does not exist yet. */
+function undoStep() {
+  if (tool && draft.length) {
+    draft.pop();
+    drawGhost(draft);
+    if (!draft.length) setReadout('');
+    drawHint();
+    return;
+  }
+  undo();
 }
 
 /* ------------------------------------------------------------------ *
@@ -1623,7 +1995,7 @@ function buildPrintSheet() {
   const t = totals(), pf = pitchFactor();
   const u = AREA_UNITS[state.areaUnit];
   const rows = state.shapes.filter(sh => !sh.hidden).map(sh => {
-    const m = sh.m || measureOf(sh.pts, sh.kind);
+    const m = measureShape(sh);
     if (sh.kind === 'line') {
       return `<tr><td>${escapeHtml(sh.name)} (line)</td><td>&mdash;</td>
               <td>${fmtLen(m.len)}</td><td>&mdash;</td></tr>`;
@@ -1661,6 +2033,7 @@ $('searchBtn').addEventListener('click', doSearch);
 $('search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
 $('offsetBtn').addEventListener('click', doOffset);
+$('sidesNums').addEventListener('click', () => setSideNums(!state.sideNums));
 $('sidesAll').addEventListener('click', () => {
   const sh = selectedShape();
   if (!sh) return;
@@ -1753,7 +2126,8 @@ $('printBtn').addEventListener('click', () => {
 
 $('clearBtn').addEventListener('click', () => {
   if (!state.shapes.length) return;
-  if (!confirm(`Delete all ${state.shapes.length} shape(s)? Save a .kml first if you want to keep them.`)) return;
+  if (!confirm(`Delete all ${state.shapes.length} shape(s)? Ctrl+Z brings them back, and a .kml keeps them for good.`)) return;
+  pushUndo();
   state.shapes.slice().forEach(s => removeShape(s.id));
   renderAll(); save();
 });
@@ -1769,17 +2143,28 @@ document.addEventListener('drop', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Shift') shiftHeld = true;
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+  // While a field has focus, Ctrl+Z is the browser's own text undo, which is
+  // what someone half way through renaming a shape means by it.
   if (typing || $('help').open) return;
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); undoStep(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    return;   // and no bare-letter shortcut fires off a browser combo
+  }
   const min = tool === 'line' ? 2 : 3;
   if (e.key === 'Escape') { tool ? setTool(null) : select(null); }
   else if (e.key === 'Enter' && tool && draft.length >= min) commitDraft(draft.slice());
   else if (e.key === 'a' || e.key === 'A') setTool('area');
   else if (e.key === 'l' || e.key === 'L') setTool('line');
-  else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selected != null) removeShape(state.selected);
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selected != null) {
+    pushUndo(); removeShape(state.selected);
+  }
 });
 document.addEventListener('keyup', (e) => { if (e.key === 'Shift') shiftHeld = false; });
 
 map.on('moveend zoomend', save);
+map.on('zoomend', drawSideNums);   // the badges are nudged in pixels, not metres
 window.addEventListener('beforeprint', () => {
   if (!$('printSheet').innerHTML) buildPrintSheet();
   map.invalidateSize({ animate: false });

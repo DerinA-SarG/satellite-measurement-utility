@@ -145,7 +145,7 @@ dialog button{margin-top:16px}
   html{height:auto}
   body{overflow:visible;background:#fff;color:#000;height:auto}
   #shell{display:block;height:auto}
-  #side,#readout,.leaflet-control-zoom,.leaflet-control-layers,.vtx{display:none !important}
+  #side,#readout,.leaflet-control-zoom,.leaflet-control-layers,.vtx,.sideNum{display:none !important}
   /* keep the real map — Leaflet tiles are plain <img>, so they print */
   #mapWrap{position:relative;height:105mm;margin:6mm 14mm 7mm;border:1px solid #999;overflow:hidden}
   .measure-label{background:#fff !important;color:#000 !important;border-color:#666 !important}
@@ -170,6 +170,7 @@ dialog button{margin-top:16px}
 .sidesHead em { font-style: normal; text-transform: none; letter-spacing: 0; }
 .sidesBtns { display: flex; gap: 6px; }
 button.mini { padding: 2px 8px; font-size: 11px; }
+button.mini.on { background: #16324f; border-color: var(--accent); color: var(--accent2); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {
   min-width: 26px; padding: 3px 6px; font-size: 11px; line-height: 1;
@@ -178,6 +179,20 @@ button.mini { padding: 2px 8px; font-size: 11px; }
 }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #f8fbff; font-weight: 600; }
 .chip:hover { border-color: var(--accent); }
+.chip.hot { border-color: #fbbf24; }
+.sides .tiny { font-size: 10.5px; margin-top: 6px; opacity: .85; }
+
+/* Side numbers on the map, up while the Numbers button is on. Leaflet
+   positions these with a transform of its own, so nothing here may set one. */
+.sideNum {
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(10,15,21,.82); border: 1.5px solid var(--line2);
+  color: var(--dim); font: 600 11px/1 var(--font); font-variant-numeric: tabular-nums;
+  cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.55);
+}
+.sideNum.on { background: var(--accent); border-color: #fff; color: #f8fbff; }
+.sideNum.hot { background: #fbbf24; border-color: #fff; color: #1a1206;
+  box-shadow: 0 0 0 4px rgba(251,191,36,.45); }
 
 .listHead {
   display: flex; align-items: center; justify-content: space-between;
