@@ -191,6 +191,21 @@ function measureLine(pts) {
 const measureOf = (pts, kind, holes) =>
   kind === 'line' ? measureLine(pts) : measureArea(pts, holes);
 
+/** Several separate pieces measured as one shape. */
+function measureParts(parts) {
+  if (parts.length === 1) return measureArea(parts[0].pts, parts[0].holes);
+  let area = 0, perim = 0, big = null;
+  for (const part of parts) {
+    const m = measureArea(part.pts, part.holes);
+    area += m.area;
+    perim += m.perim;
+    if (!big || m.area > big.area) big = m;
+  }
+  // The overall dimensions and the label go with the largest piece. A box
+  // drawn round two buildings a mile apart is not a measurement of anything.
+  return { area, perim, dims: big.dims, anchor: big.anchor };
+}
+
 /* ------------------------------------------------------------------ *
  * 1b. Outward offset (buffer)
  *
@@ -401,6 +416,43 @@ function offsetMitred(pts, d) {
   for (const corner of corners) for (const q of corner) all.push(q);
   const keep = all.filter(q => distToPath(q, segs) >= d - tol);
   return closeRing(keep.length >= 3 ? keep : all, tol, f);
+}
+
+/* The ring around a whole shape, however many pieces it is made of.
+ *
+ * Each piece is offset on its own and the results are unioned, so setbacks
+ * that run into each other become one piece of ground rather than two that
+ * overlap. The buildings are then cut back out of whatever they landed in --
+ * out of the union rather than out of their own ring, because a piece close
+ * enough to sit inside its neighbour's setback must still not be paved over.
+ */
+function offsetMultiPart(sh, d) {
+  const parts = partsOf(sh);
+  const outers = [];
+  for (const part of parts) {
+    const o = offsetMitred(part.pts, d);
+    if (!o) return null;
+    outers.push({ pts: o, holes: null });
+  }
+  if (parts.length === 1) return [{ pts: outers[0].pts, holes: [parts[0].pts.slice()] }];
+
+  const merged = unionShapes(outers);
+  if (!merged) return null;
+  return merged.map(r => {
+    const holes = [...(r.holes || [])];
+    for (const part of parts) if (ringInsideRing(part.pts, r.pts)) holes.push(part.pts.slice());
+    return { pts: r.pts, holes: holes.length ? holes : null };
+  });
+}
+
+/** Is this ring inside that one? Tested at an edge midpoint, since a corner
+    may be shared with the ring it is being tested against. */
+function ringInsideRing(inner, outer) {
+  const c = centreOf(outer);
+  const f = frameAt(c[0], c[1]);
+  const ring = outer.map(q => f.toXY(q[0], q[1]));
+  const m = [(inner[0][0] + inner[1][0]) / 2, (inner[0][1] + inner[1][1]) / 2];
+  return pointInRing(f.toXY(m[0], m[1]), ring);
 }
 
 /* Just the ground the offset adds along the chosen sides, as a shape of its
@@ -877,6 +929,10 @@ function addShape(pts, opts = {}) {
     // Ground inside the outline that the shape does not cover -- what an
     // offset strip leaves for the building it was measured around.
     holes: holes && holes.length ? holes : null,
+    // Further separate pieces, from a merge. Null on everything else.
+    parts: kind === 'area' && opts.parts && opts.parts.length
+      ? opts.parts.map(q => ({ pts: q.pts, holes: q.holes && q.holes.length ? q.holes : null }))
+      : null,
     layer: null,
     label: null
   };
@@ -900,22 +956,49 @@ function addShape(pts, opts = {}) {
 const colorOf = (sh) => sh.color || (sh.kind === 'line' ? COLOR.line : COLOR[sh.mode]);
 
 /** What Leaflet wants: one ring, or the outline followed by its holes. */
-const latLngsOf = (sh) => sh.holes && sh.holes.length ? [sh.pts, ...sh.holes] : sh.pts;
+/* A merged shape is one entry in the list, one name and one figure, but it is
+   still however many separate pieces of ground it was made from -- two
+   buildings across a yard from each other do not become one building by being
+   counted together. `pts`/`holes` are the first piece; `parts` holds the rest,
+   and is null on everything that was never merged. */
+const partsOf = (sh) => sh.kind === 'line'
+  ? [{ pts: sh.pts, holes: null }]
+  : [{ pts: sh.pts, holes: sh.holes }, ...(sh.parts || [])];
 
-/** Every ring the shape is drawn from, outline first. */
-const ringsOf = (sh) => sh.kind === 'line' || !sh.holes ? [sh.pts] : [sh.pts, ...sh.holes];
+/** The live array of corners for piece k, the one the handles edit in place. */
+const ringAt = (sh, k) => k === 0 ? sh.pts : sh.parts[k - 1].pts;
 
-const measureShape = (sh) => sh.m || measureOf(sh.pts, sh.kind, sh.holes);
+const ringsOfPart = (part) => part.holes && part.holes.length ? [part.pts, ...part.holes] : [part.pts];
+
+/** What Leaflet wants: a ring, a ring with holes, or a list of both. */
+function latLngsOf(sh) {
+  if (sh.kind === 'line') return sh.pts;
+  const parts = partsOf(sh);
+  if (parts.length > 1) return parts.map(ringsOfPart);
+  return sh.holes && sh.holes.length ? [sh.pts, ...sh.holes] : sh.pts;
+}
+
+/** Every ring the shape is drawn from, each piece's outline before its holes. */
+const ringsOf = (sh) => sh.kind === 'line' ? [sh.pts] : partsOf(sh).flatMap(ringsOfPart);
+
+/** Every corner in the shape, for bounds and fitting. */
+const allPts = (sh) => ringsOf(sh).flat();
+
+const measureShape = (sh) => sh.m ||
+  (sh.kind === 'line' ? measureLine(sh.pts) : measureParts(partsOf(sh)));
 
 /** The shape as it is saved and as undo remembers it -- no Leaflet, no id. */
 const plainShape = (sh) => ({ name: sh.name, kind: sh.kind, mode: sh.mode, color: sh.color,
-                              hidden: sh.hidden, pts: sh.pts, holes: sh.holes });
+                              hidden: sh.hidden, pts: sh.pts, holes: sh.holes,
+                              parts: sh.parts });
 
 /** Slide a whole shape, holes and all. */
 function translateShape(sh, dLat, dLng) {
   const shift = (ring) => ring.map(q => [q[0] + dLat, q[1] + dLng]);
   sh.pts = shift(sh.pts);
   if (sh.holes) sh.holes = sh.holes.map(shift);
+  if (sh.parts) sh.parts = sh.parts.map(q => ({ pts: shift(q.pts),
+                                                holes: q.holes ? q.holes.map(shift) : null }));
   sh.layer.setLatLngs(latLngsOf(sh));
 }
 
@@ -940,7 +1023,7 @@ function labelFor(sh, m) {
 function refreshShape(sh) {
   sh.layer.setLatLngs(latLngsOf(sh));
   sh.layer.setStyle(styleFor(sh));
-  const m = measureOf(sh.pts, sh.kind, sh.holes);
+  const m = sh.kind === 'line' ? measureLine(sh.pts) : measureParts(partsOf(sh));
   sh.m = m;
   // Measured either way: a hidden shape still shows its own figure in the
   // list, so it can be judged before being counted again.
@@ -1055,15 +1138,19 @@ function buildHandles(sh) {
   if (tool) return;
   const closed = sh.kind !== 'line';
   addMoveHandle(sh);
-  sh.pts.forEach((p, i) => {
+  // Every piece of a merged shape gets its own corners; `ring` is the live
+  // array so a splice here is a splice on the shape itself.
+  partsOf(sh).forEach((part, k) => {
+  const ring = ringAt(sh, k);
+  ring.forEach((p, i) => {
     const mk = L.marker(p, { icon: handleIcon(false), draggable: true, zIndexOffset: 1000,
                              pane: 'handles' }).addTo(map);
     mk.on('dragstart', beginEdit);
     mk.on('drag', (e) => {
       const ll = e.target.getLatLng();
-      sh.pts[i] = [ll.lat, ll.lng];
+      ring[i] = [ll.lat, ll.lng];
       sh.layer.setLatLngs(latLngsOf(sh));
-      liveReadout(measureOf(sh.pts, sh.kind, sh.holes), sh.kind);
+      liveReadout(sh.kind === 'line' ? measureLine(sh.pts) : measureParts(partsOf(sh)), sh.kind);
     });
     mk.on('dragend', () => {
       commitEdit();
@@ -1071,25 +1158,26 @@ function buildHandles(sh) {
     });
     mk.on('contextmenu', (e) => {
       L.DomEvent.stop(e);
-      if (sh.pts.length <= (closed ? 3 : 2)) return;
+      if (ring.length <= (closed ? 3 : 2)) return;
       pushUndo();
-      sh.pts.splice(i, 1);
+      ring.splice(i, 1);
       refreshShape(sh); buildHandles(sh); renderAll(); save();
     });
     handles.push(mk);
 
-    if (!closed && i === sh.pts.length - 1) return;   // open line has no closing midpoint
-    const q = sh.pts[(i + 1) % sh.pts.length];
+    if (!closed && i === ring.length - 1) return;   // open line has no closing midpoint
+    const q = ring[(i + 1) % ring.length];
     const mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
     const mm = L.marker(mid, { icon: handleIcon(true), zIndexOffset: 900, pane: 'handles',
       title: 'Click to add a corner here' }).addTo(map);
     mm.on('click', (e) => {
       L.DomEvent.stop(e);
       pushUndo();
-      sh.pts.splice(i + 1, 0, mid);
+      ring.splice(i + 1, 0, mid);
       refreshShape(sh); buildHandles(sh); renderAll(); save();
     });
     handles.push(mm);
+  });
   });
 }
 
@@ -1271,16 +1359,16 @@ function doOffset() {
     $('offsetMsg').textContent = 'Pick at least one side, or select them all.';
     return;
   }
-  // All the way round, the strip is a ring: the rounded-corner buffer with the
-  // shape itself cut out of it as a hole. Along a few sides it is an open band
-  // with nothing to cut out -- see offsetStrip.
+  // All the way round, the strip is a ring: the offset with the shape itself
+  // cut out of it as a hole. Along a few sides it is an open band with nothing
+  // to cut out -- see offsetStrip.
   const partial = sides && sides.size < sh.pts.length;
   const bands = partial ? offsetStrip(sh.pts, metres, sides) : null;
   // An area gets mitred corners, so the ring stays editable. A line keeps the
   // rounded buffer: a corridor's ends are caps, and there is no corner there
   // for two straight sides to meet at.
   const outer = partial ? null
-    : sh.kind === 'area' ? offsetMitred(sh.pts, metres)
+    : sh.kind === 'area' ? offsetMultiPart(sh, metres)
                          : offsetGeometry(sh.pts, sh.kind, metres);
   if (!bands && !outer) {
     $('offsetMsg').textContent = 'That distance collapses the shape — try a smaller one.';
@@ -1299,8 +1387,10 @@ function doOffset() {
   } else {
     // A line encloses no ground of its own, so its offset is the whole
     // corridor and there is nothing to cut out of it.
-    made.push(addShape(outer, { kind: 'area', name: `${sh.name} ${tag}`,
-                                holes: sh.kind === 'area' ? [sh.pts.slice()] : null }));
+    made.push(sh.kind === 'area'
+      ? addShape(outer[0].pts, { kind: 'area', name: `${sh.name} ${tag}`,
+                                 holes: outer[0].holes, parts: outer.slice(1) })
+      : addShape(outer, { kind: 'area', name: `${sh.name} ${tag}` }));
   }
 
   renderAll(); save();
@@ -1332,41 +1422,40 @@ function renderMerge() {
   b.title = `Join ${areas.length} areas into one shape`;
 }
 
-/* Joins the picked areas into as few shapes as they actually make. Ground
-   under two of them at once is counted once afterwards, which is the whole
-   point -- it is why this is a union and not just a shape with more corners. */
+/* Makes the picked areas into one shape under one name.
+ *
+ * They are not welded into one outline: two buildings across a yard from each
+ * other stay two pieces of ground, and the merged shape keeps both. What the
+ * union is for is the ground they share -- where they do overlap, the pieces
+ * are resolved so that ground is counted once instead of twice, and where a
+ * gap is left enclosed in the middle it becomes a hole rather than being
+ * quietly filled in. Pieces that never touch come through untouched.
+ */
 function doMerge() {
   const picked = pickedShapes();
   const areas = picked.filter(s => s.kind === 'area');
   const lines = picked.length - areas.length;
   if (areas.length < 2) return;
 
-  const merged = unionShapes(areas.map(s => ({ pts: s.pts, holes: s.holes })));
+  const merged = unionShapes(areas.flatMap(s => partsOf(s)));
   if (!merged) { ioMsg('Could not merge those. Check none of them crosses itself.'); return; }
   const before = areas.reduce((a, s) => a + measureShape(s).area, 0);
   const after = merged.reduce((a, r) => a + measureArea(r.pts, r.holes).area, 0);
   const overlap = before - after;
-  // Shapes that only meet along an edge -- a ring and the building it was
-  // measured around -- overlap by nothing at all, and joining them is still
-  // worth doing. What says nothing happened is coming back with as many
-  // shapes as went in and the same ground covered.
-  if (merged.length >= areas.length && overlap < before * 1e-9) {
-    ioMsg('Those areas do not touch, so joining them would not change anything.');
-    return;
-  }
 
   pushUndo();
+  // One object, so it keeps the name of the one that was selected proper.
   const first = areas[0];
-  const base = `${first.name} + ${areas.length - 1} more`;
-  const color = first.color, mode = first.mode;
+  const name = first.name, color = first.color, mode = first.mode;
   areas.forEach(s => removeShape(s.id));
-  const made = merged.map((r, i) => addShape(r.pts, {
-    kind: 'area', holes: r.holes, color, mode,
-    name: base + (merged.length > 1 ? ` · part ${i + 1}` : '')
-  }));
+  const made = addShape(merged[0].pts, {
+    kind: 'area', holes: merged[0].holes, parts: merged.slice(1), color, mode, name
+  });
   renderAll(); save();
-  select(made[0].id);
-  ioMsg(`Merged ${areas.length} areas into ${made.length} — ${fmtArea(after)}.` +
+  select(made.id);
+  const pieces = merged.length;
+  ioMsg(`Merged ${areas.length} areas into “${name}” — ${fmtArea(after)}` +
+        (pieces > 1 ? ` across ${pieces} separate pieces` : '') + '.' +
         (overlap > before * 1e-9 ? ` ${fmtArea(overlap)} of overlap now counted once.` : '') +
         (lines ? ` ${lines} line${lines > 1 ? 's were' : ' was'} left alone.` : ''));
 }
@@ -1411,6 +1500,7 @@ function drawSideNums() {
   sideNums = [];
   const sh = selectedShape();
   if (!state.sideNums || !sh || sh.kind !== 'area' || sh.hidden) return;
+  if (partsOf(sh).length > 1) return;      // several outlines, no one set of sides
   const sides = pickedSides(sh);
   const n = sh.pts.length;
   // The midpoint of a side is already taken -- that is where the hollow "add a
@@ -1494,7 +1584,11 @@ function setSideNums(on) {
 function renderSides() {
   const box = $('sidesBox'), chips = $('sidesChips');
   const sh = selectedShape();
-  if (!sh || sh.kind !== 'area' || sh.hidden) { box.hidden = true; chips.innerHTML = ''; return; }
+  // The chips number the sides of one outline. A merged shape has several, so
+  // it offsets all the way round every piece and there is nothing to pick.
+  if (!sh || sh.kind !== 'area' || sh.hidden || partsOf(sh).length > 1) {
+    box.hidden = true; chips.innerHTML = ''; return;
+  }
 
   box.hidden = false;
   if (sidePick.id !== sh.id) sidePick = { id: sh.id, sides: null };
@@ -1690,20 +1784,23 @@ function toKml() {
     const col = colorOf(sh);
     const coords = (r) => r.concat(isLine ? [] : [r[0]])
       .map(p => `${p[1].toFixed(9)},${p[0].toFixed(9)},0`).join(' ');
-    const inner = (sh.holes || []).map(h =>
-      `<innerBoundaryIs><LinearRing><coordinates>${coords(h)}</coordinates></LinearRing></innerBoundaryIs>`).join('\n      ');
+    const polygon = (part) => `<Polygon><altitudeMode>clampToGround</altitudeMode>
+      <outerBoundaryIs><LinearRing><coordinates>${coords(part.pts)}</coordinates></LinearRing></outerBoundaryIs>
+      ${(part.holes || []).map(h =>
+        `<innerBoundaryIs><LinearRing><coordinates>${coords(h)}</coordinates></LinearRing></innerBoundaryIs>`).join('\n      ')}
+    </Polygon>`;
     const desc = isLine
       ? [`Length: ${fmtLen(m.len)} (${num(m.len, 2)} m)`, `Segments: ${m.segs.length}`]
       : [`Area: ${fmtArea(m.area)} (${num(m.area, 2)} sq m)`,
          m.dims ? `Dimensions: ${fmtLen(m.dims.long, false)} x ${fmtLen(m.dims.short)}` : null,
          `Perimeter: ${fmtLen(m.perim)}`,
          sh.mode === 'subtract' ? 'Excluded from the site total.' : null];
+    const parts = isLine ? [] : partsOf(sh);
     const geom = isLine
       ? `<LineString><tessellate>1</tessellate><coordinates>${coords(sh.pts)}</coordinates></LineString>`
-      : `<Polygon><altitudeMode>clampToGround</altitudeMode>
-      <outerBoundaryIs><LinearRing><coordinates>${coords(sh.pts)}</coordinates></LinearRing></outerBoundaryIs>
-      ${inner}
-    </Polygon>`;
+      : parts.length > 1
+        ? `<MultiGeometry>${parts.map(polygon).join('\n    ')}</MultiGeometry>`
+        : polygon(parts[0]);
     return `  <Placemark>
     <name>${escapeHtml(sh.name)}</name>
     <visibility>${sh.hidden ? 0 : 1}</visibility>
@@ -1755,9 +1852,13 @@ function toGeoJson() {
               stroke: colorOf(sh), fill: colorOf(sh) },
         geometry: isLine
           ? { type: 'LineString', coordinates: sh.pts.map(p => [+p[1].toFixed(9), +p[0].toFixed(9)]) }
-          : { type: 'Polygon',
-              coordinates: ringsOf(sh).map(r =>
-                r.concat([r[0]]).map(p => [+p[1].toFixed(9), +p[0].toFixed(9)])) }
+          : partsOf(sh).length > 1
+            ? { type: 'MultiPolygon',
+                coordinates: partsOf(sh).map(part => ringsOfPart(part).map(r =>
+                  r.concat([r[0]]).map(p => [+p[1].toFixed(9), +p[0].toFixed(9)]))) }
+            : { type: 'Polygon',
+                coordinates: ringsOf(sh).map(r =>
+                  r.concat([r[0]]).map(p => [+p[1].toFixed(9), +p[0].toFixed(9)])) }
       };
     })
   }, null, 2);
@@ -1832,11 +1933,17 @@ function importKml(text) {
       const co = ls.getElementsByTagNameNS('*', 'coordinates')[0];
       if (co) lines.push(parseCoordString(co.textContent));
     }
-    polys.forEach((r, i) => {
-      const pts = dedupeRing(r.outer, true);
-      const holes = r.holes.map(h => dedupeRing(h, true)).filter(h => h.length >= 3);
-      if (pts.length >= 3) found.push({ pts, holes, kind: 'area', mode, color, hidden, name: polys.length > 1 ? `${base} ${i + 1}` : base });
-    });
+    // One Placemark is one feature, so several Polygons in it are the pieces
+    // of one merged shape rather than several shapes that happen to share a
+    // name -- which is what makes a merge survive the round trip.
+    const built = polys.map(r => ({ pts: dedupeRing(r.outer, true),
+                                    holes: r.holes.map(h => dedupeRing(h, true))
+                                                  .filter(h => h.length >= 3) }))
+                       .filter(r => r.pts.length >= 3);
+    if (built.length) {
+      found.push({ pts: built[0].pts, holes: built[0].holes, parts: built.slice(1),
+                   kind: 'area', mode, color, hidden, name: base });
+    }
     lines.forEach((r, i) => {
       const pts = dedupeRing(r, false);
       if (pts.length >= 2) found.push({ pts, kind: 'line', mode: 'add', color, hidden, name: lines.length > 1 ? `${base} ${i + 1}` : base });
@@ -1867,17 +1974,19 @@ function importGeoJson(text) {
     }
     const polys = geo.type === 'Polygon' ? [geo.coordinates]
                 : geo.type === 'MultiPolygon' ? geo.coordinates : [];
-    polys.forEach((poly, i) => {
-      const pts = dedupeRing(poly[0].map(c => [c[1], c[0]]), true);
-      const holes = poly.slice(1)
-        .map(r => dedupeRing(r.map(c => [c[1], c[0]]), true)).filter(h => h.length >= 3);
-      if (pts.length >= 3) {
-        found.push({ pts, holes, kind: 'area', name: nm + (polys.length > 1 ? ` ${i + 1}` : ''),
-                     color: props.fill || props.stroke || null,
-                     hidden: !!props.hidden,
-                     mode: props.mode === 'subtract' ? 'subtract' : 'add' });
-      }
-    });
+    // A MultiPolygon is one feature: its polygons are the pieces of one shape.
+    const built = polys.map(poly => ({
+      pts: dedupeRing(poly[0].map(c => [c[1], c[0]]), true),
+      holes: poly.slice(1).map(r => dedupeRing(r.map(c => [c[1], c[0]]), true))
+                          .filter(h => h.length >= 3)
+    })).filter(r => r.pts.length >= 3);
+    if (built.length) {
+      found.push({ pts: built[0].pts, holes: built[0].holes, parts: built.slice(1),
+                   kind: 'area', name: nm,
+                   color: props.fill || props.stroke || null,
+                   hidden: !!props.hidden,
+                   mode: props.mode === 'subtract' ? 'subtract' : 'add' });
+    }
   });
   return found;
 }
@@ -1886,8 +1995,9 @@ function loadFound(found, label) {
   if (!found.length) { ioMsg('No shapes found in that file.'); return; }
   pushUndo();
   found.forEach(f => addShape(f.pts, { name: f.name, mode: f.mode, kind: f.kind,
-                                      color: f.color, hidden: f.hidden, holes: f.holes }));
-  const all = state.shapes.filter(s => !s.hidden).flatMap(s => s.pts);
+                                      color: f.color, hidden: f.hidden, holes: f.holes,
+                                      parts: f.parts }));
+  const all = state.shapes.filter(s => !s.hidden).flatMap(allPts);
   if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.15));
   renderAll(); save();
   ioMsg(`Loaded ${found.length} shape${found.length > 1 ? 's' : ''} from ${label}.`);
@@ -1946,7 +2056,7 @@ function captureBounds(marginM) {
   const shown = state.shapes.filter(s => !s.hidden && s.pts.length);
   if (!shown.length) return null;
 
-  const pts = shown.flatMap(s => s.pts);
+  const pts = shown.flatMap(allPts);
   let latMin = 90, latMax = -90, lonMin = 180, lonMax = -180;
   for (const p of pts) {
     latMin = Math.min(latMin, p[0]); latMax = Math.max(latMax, p[0]);
@@ -2175,10 +2285,26 @@ function save() {
         offsetDist: state.offsetDist, captureMargin: state.captureMargin,
         gkey: state.gkey
       }));
-      $('saveState').textContent = 'Saved in this browser · ' +
+      $('saveState').textContent = (nativeApi() ? 'Backed up on close · ' : 'Saved in this browser · ') +
         new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     } catch (e) { $('saveState').textContent = 'Could not autosave (storage blocked).'; }
+    stashForBackup();
   }, 400);
+}
+
+/* In the desktop window there is no storage that survives the run, so the
+   exported text is handed to the Python side as the work changes and written
+   out as the window closes. Doing it here rather than at close time keeps the
+   export on the page's own thread, where the bridge is known to work. */
+function stashForBackup() {
+  const api = nativeApi();
+  if (!api || !api.stash) return;
+  try {
+    const r = api.stash(state.shapes.length ? toKml() : '',
+                        state.shapes.length ? toGeoJson() : '',
+                        state.shapes.length);
+    if (r && r.catch) r.catch(() => {});
+  } catch (e) { /* a backup that cannot be prepared must not break the app */ }
 }
 
 function restore() {
@@ -2315,12 +2441,12 @@ async function doSearch() {
 
   msg.textContent = 'Searching…';
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=' + encodeURIComponent(q);
-    const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    if (!j.length) { msg.textContent = 'No match. Try a simpler address, or paste "lat, lng".'; return; }
-    const hit = j[0];
+    const hit = await geocode(q, msg);
+    if (!hit) {
+      msg.textContent = 'No match, even for the street on its own. ' +
+                        'Try the nearest junction, or paste "lat, lng".';
+      return;
+    }
     if (hit.boundingbox) {
       const b = hit.boundingbox.map(Number);
       map.fitBounds([[b[0], b[2]], [b[1], b[3]]], { maxZoom: 19 });
@@ -2328,10 +2454,56 @@ async function doSearch() {
       map.setView([+hit.lat, +hit.lon], 19);
     }
     if (map.getZoom() < 17) map.setZoom(18);
-    msg.textContent = hit.display_name;
+    msg.textContent = (hit.approx ? 'Nearest match: ' : '') + hit.display_name;
   } catch (e) {
     msg.textContent = 'Search unavailable. You can paste "lat, lng" instead.';
   }
+}
+
+const nominatim = async (params) => {
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&' + params,
+                        { headers: { 'Accept': 'application/json' } });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  return j.length ? j[0] : null;
+};
+
+/* Nominatim answers nothing at all when part of an address does not match,
+ * rather than answering with the part that does. The common way for that to
+ * happen in the US is a postal city that is not the administrative one: an
+ * address posted as Fort Myers may sit in unincorporated Lee County, and
+ * naming the city then rules out the street that is actually there.
+ *
+ * So the query is loosened a step at a time, and anything found after the
+ * first attempt is reported as the nearest match rather than as the address.
+ */
+async function geocode(q, msg) {
+  const bits = q.split(',').map(t => t.trim()).filter(Boolean);
+  const zip = (q.match(/\b(\d{5})(?:-\d{4})?\b\s*$/) || [])[1];
+  const street = bits[0];
+
+  let hit = await nominatim('q=' + encodeURIComponent(q));
+  if (hit) return hit;
+
+  // the street with its postcode, which pins the area without naming the town
+  if (zip && street && street !== q) {
+    msg.textContent = 'No exact match — trying the street…';
+    hit = await nominatim('countrycodes=us&postalcode=' + encodeURIComponent(zip) +
+                          '&street=' + encodeURIComponent(street));
+    if (hit) return Object.assign(hit, { approx: true });
+  }
+  // the street on its own, house number and all
+  if (street && street !== q) {
+    hit = await nominatim('q=' + encodeURIComponent(street));
+    if (hit) return Object.assign(hit, { approx: true });
+  }
+  // and finally the street name without the house number
+  const named = street && street.replace(/^\s*\d+[a-z]?\s+/i, '');
+  if (named && named !== street) {
+    hit = await nominatim('q=' + encodeURIComponent(named));
+    if (hit) return Object.assign(hit, { approx: true });
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2530,3 +2702,14 @@ if (state.gkey) {
   enableGoogle(state.gkey);
 }
 renderAll();
+
+// In the desktop window, say where the closing backup lands.
+window.addEventListener('pywebviewready', async () => {
+  try {
+    const folder = await nativeApi().backup_folder();
+    $('saveState').textContent = folder
+      ? 'Backs up to ' + folder + ' when this window closes'
+      : 'No writable backup folder — save a .kml before closing';
+    stashForBackup();
+  } catch (e) { /* nothing to say if the bridge is not there */ }
+});

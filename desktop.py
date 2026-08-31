@@ -8,7 +8,9 @@ Run directly for development:      python desktop.py
 Build a standalone exe:            python build_exe.py
 """
 
+import datetime
 import functools
+import glob
 import http.server
 import os
 import socketserver
@@ -18,11 +20,82 @@ import threading
 import traceback
 
 APP_NAME = "Satellite Measurement Utility"
+BACKUP_KEEP = 40        # newest N of each format; older ones are pruned
+
+# The page hands its exported text over as it goes, so that closing the window
+# only has to write a file. Pulling it out of the webview at close time instead
+# would mean calling into the UI thread while it is being torn down.
+_stash = {"kml": None, "geojson": None, "shapes": 0}
 
 
 def asset_dir():
     """Where index.html lives — the PyInstaller bundle, or this folder."""
     return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def app_dir():
+    """The folder the exe itself sits in, not the unpacked bundle."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def backup_dir():
+    """Beside the exe if that is writable, otherwise under Documents. Returns
+    None if neither is, in which case there is nowhere to back up to."""
+    for cand in (os.path.join(app_dir(), "backups"),
+                 os.path.join(os.path.expanduser("~"), "Documents", APP_NAME, "backups")):
+        try:
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, ".writable")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("")
+            os.remove(probe)
+            return cand
+        except OSError:
+            continue
+    return None
+
+
+def prune(folder):
+    """Keep the newest BACKUP_KEEP of each format."""
+    for ext in ("kml", "geojson"):
+        found = sorted(glob.glob(os.path.join(folder, "site-measurements-*." + ext)),
+                       key=os.path.getmtime, reverse=True)
+        for old in found[BACKUP_KEEP:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+
+def write_backup():
+    """Write what the page last handed over. The window keeps nothing between
+    runs by design, so this is the copy that survives it."""
+    if not _stash["shapes"] or not (_stash["kml"] or _stash["geojson"]):
+        log("backup: nothing drawn, nothing to write")
+        return None
+    folder = backup_dir()
+    if not folder:
+        log("backup: nowhere writable to put it")
+        return None
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    written = []
+    for ext in ("kml", "geojson"):
+        text = _stash[ext]
+        if not text:
+            continue
+        path = os.path.join(folder, "site-measurements-{}.{}".format(stamp, ext))
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            written.append(path)
+        except OSError as e:
+            log("backup {} failed: {}".format(ext, e))
+    for path in written:
+        log("backup -> " + path)
+    prune(folder)
+    return folder
 
 
 def log_path():
@@ -63,6 +136,18 @@ class Api:
     build the JS bridge, so holding a reference to the window here sends it
     recursing through the WebView2 COM objects.
     """
+
+    def stash(self, kml, geojson, shapes):
+        """The page's current work, handed over whenever it autosaves. Held in
+        memory only; write_backup puts it on disk as the window closes."""
+        _stash["kml"] = kml
+        _stash["geojson"] = geojson
+        _stash["shapes"] = int(shapes or 0)
+        return True
+
+    def backup_folder(self):
+        """Where a backup would go, so the page can say so. None if nowhere."""
+        return backup_dir()
 
     def _dialog(self, kind, **kw):
         import webview
@@ -153,7 +238,7 @@ def main():
     except OSError:
         pass
 
-    webview.create_window(
+    window = webview.create_window(
         APP_NAME,
         f"http://127.0.0.1:{port}/",
         js_api=Api(),
@@ -162,6 +247,21 @@ def main():
         min_size=(900, 620),
         text_select=False,
     )
+
+    # Nothing survives the window otherwise -- it runs private, and the server
+    # takes a new port each launch, so the page's own storage is a fresh one
+    # every time. A copy in both formats on the way out is the safety net.
+    def on_closing():
+        log("closing: writing backup")
+        try:
+            folder = write_backup()
+            if folder:
+                log("backup folder: " + folder)
+        except Exception:
+            log(traceback.format_exc())
+        return True     # never block the close over a backup
+
+    window.events.closing += on_closing
     webview.start()
     return 0
 

@@ -168,6 +168,13 @@ Check `read_console_messages` for errors after every change.
 - Shapes are `{id, name, kind:'area'|'line', mode:'add'|'subtract', color,
   hidden, pts, holes}` where `pts` is `[[lat,lng],…]`, unclosed. Closing points
   are added only at export time.
+- `parts` is null on everything that was never merged. When set it holds the
+  *further* pieces of a multi-part shape; `pts`/`holes` stay the first one, so
+  every single-part path keeps working untouched. Read a shape through
+  `partsOf` / `ringsOf` / `allPts` / `measureShape` and edit ring k through
+  `ringAt(sh, k)`. Merging does not weld outlines together — two buildings
+  across a yard stay two pieces under one name — but it does run them through
+  `unionShapes`, so ground under two at once stops being counted twice.
 - `holes` is null on nearly everything. It is a list of rings cut out of `pts`
   — how a full-ring offset holds the shape it was measured around. Rings come
   off the area and add their edge to the perimeter, Leaflet takes them as extra
@@ -182,10 +189,23 @@ Check `read_console_messages` for errors after every change.
   that sums shapes has to skip it; anything that lists them must not.
 - Colour is `null` when the shape uses its kind/mode default; `colorOf()`
   resolves it. Never write the default into `color`.
-- The `.exe` keeps nothing between runs, and that is deliberate: pywebview
-  defaults to `private_mode`, and the loopback server takes a fresh port each
-  launch so the origin changes anyway. Export is the persistence story. Do not
-  "fix" it without being asked.
+- The `.exe` keeps nothing between runs: pywebview defaults to `private_mode`,
+  and the loopback server takes a fresh port each launch so the origin changes
+  anyway. Confirmed by launching twice and watching the page come up empty both
+  times. That is left alone deliberately; the safety net is `write_backup`,
+  which drops a `.kml` and a `.geojson` into `backups/` as the window closes.
+  The page hands its exported text over through `Api.stash` as it autosaves,
+  rather than the close handler pulling it out with `evaluate_js` — calling
+  into the webview while it is being torn down is how that deadlocks.
+- Testing the close path needs a real `WM_CLOSE`. `Stop-Process` and
+  `Popen.kill()` skip `window.events.closing` entirely, so the backup never
+  runs and the test proves nothing. The window also belongs to the child the
+  onefile bootloader spawns, not to the pid you launched, so enumerate windows
+  by title rather than by process.
+- **Build output is buffered.** `build_exe.py`'s own prints flush at exit while
+  PyInstaller's go straight out, so `| tail -2` can show the "build ->" line of
+  a run that then failed. Grep for the `done ->` line, or for `PermissionError`
+  — a running exe locks its own file and the build dies with `WinError 5`.
 - Anything that changes a shape has to record an undo step first. Discrete
   actions call `pushUndo()` before the change; drags and text fields call
   `beginEdit()` when they start and `commitEdit()` when they end, which throws

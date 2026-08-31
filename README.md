@@ -38,6 +38,10 @@ SmartScreen will warn anyone who downloads it — "More info → Run anyway".
 ## Using it
 
 1. Search the site address (or paste `32.7555, -97.3308`), and zoom in close.
+   If the exact house number is not in OpenStreetMap the search falls back to
+   the street, then to the street name, and says so — a US address whose postal
+   town is not its administrative one (an industrial park posted as one city
+   but sitting in unincorporated county land) otherwise finds nothing at all.
 2. **Area** — click each corner of the roof, then double-click or press `Enter`
    to close the shape. Hold `Shift` while clicking to snap each new wall square
    to the previous one; most warehouses are rectangular and this is faster and
@@ -58,10 +62,13 @@ SmartScreen will warn anyone who downloads it — "More info → Run anyway".
    too, which gives you a corridor of a set width — those keep rounded ends,
    because a cap is not a corner.
 5. **Merge** — select an area, `Ctrl`+click others in the list or on the map,
-   and press Merge. They become one shape following the outside of all of them.
-   Ground under two of them at once is counted once from then on, and a gap
-   left enclosed in the middle becomes a hole rather than being filled in.
-   Areas that do not touch are left alone.
+   and press Merge. They become **one shape under one name**, with one figure
+   and one row in the list. They are not welded into a single outline: two
+   buildings across a yard from each other stay two pieces of ground, and both
+   keep their own corners to drag. Where they *do* overlap the ground is
+   counted once from then on, and a gap left enclosed in the middle becomes a
+   hole rather than being filled in. Merged shapes survive a round trip through
+   `.kml` (as a MultiGeometry) and `.geojson` (as a MultiPolygon).
 6. The `+` button next to an area flips it to **subtract**, so you can cut a
    courtyard or an excluded section out of the site total. Lines never count
    toward the area total.
@@ -80,8 +87,13 @@ deletion, even Clear — and `Ctrl`+`Y` puts it back. While you are drawing,
 `Ctrl`+`Z` drops the last point instead.
 
 In the browser, everything autosaves as you go, so closing the tab does not
-lose work. The `.exe` deliberately does not: it runs a fresh private window
-each time, and `.kml` / `.geojson` are how work is kept.
+lose work. The `.exe` cannot: it runs a fresh private window each time, and the
+loopback server takes a new port on every launch, so the page's own storage is
+a new one each time. Instead it **writes a backup as the window closes** — both
+`.kml` and `.geojson`, into a `backups` folder beside the exe (or under
+`Documents\Satellite Measurement Utility\backups` if that is not writable).
+The newest 40 of each are kept. The status line at the bottom of the sidebar
+tells you which folder it is using.
 
 ### Shortcuts
 
@@ -94,6 +106,7 @@ each time, and `.kml` / `.geojson` are how work is kept.
 | `Del` | Delete the selected shape |
 | `Ctrl`+`Z` | Undo — or drop the last point while drawing |
 | `Ctrl`+`Y` | Redo (`Ctrl`+`Shift`+`Z` works too) |
+| `Ctrl`+click | Pick another area as well, ready to Merge |
 
 ## Files
 

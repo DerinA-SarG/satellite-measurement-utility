@@ -15,3 +15,6 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# closing backups written by the desktop window
+backups/
